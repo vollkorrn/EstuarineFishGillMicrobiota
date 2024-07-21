@@ -1,0 +1,863 @@
+---
+title: "EstuarineFishGillMicrobiota_dada2_21.07.24"
+output: html_document
+date: "2024-07-21"
+---
+
+The data have been created on three different MiSeq Runs, 
+Batch1 and its Replication Batch1_reseq
+Batch2
+Samples from sampling groups are spread across runs and did not show obvious batch effects
+
+
+Steps
+Step1 Trim-galore for Illumina adapers and general quality <- Optional
+Step2 FiltN and 16SPrimers and create Quality Plots
+Step3 Run dada2 Filter-Chimera-SeqError-Taxa-Pipeline once in full to have it
+Step4 Merge the SeqTabs from different sequencing runs and do
+
+
+## 1.1 Name Samples
+
+```{r}
+##############
+#Rename files#
+##############
+# awk '{
+#  f1=$2; # Full name from column 2
+#  new_name=f1; # Start with full name
+#  sub(/.*R1_001.fastq.gz/, $1"_R1_001.fastq.gz", new_name); # Replace everything before _R1_001.fastq.gz
+#  system("mv " f1 " " new_name); # Rename the file using mv
+# }' /work/samplelist.file
+# 
+# awk '{
+#  f1=$3; # Full name from column 3
+#  new_name=f1; # Start with full name
+#  sub(/.*R2_001.fastq.gz/, $1"_R2_001.fastq.gz", new_name); # Replace everything before _R2_001.fastq.gz
+#  system("mv " f1 " " new_name); # Rename the file using mv
+# }' /work/samplelist.file
+
+```
+
+## 1.2 Trimming
+
+We trimmed the reads initially to filter Illumina adapter remnants and bad quality reads overall
+
+```{r}
+# ############################################################
+# #Step1 Trim-galore for Illumina adapers and general quality#
+# ############################################################
+# #############
+# #Trim-Galore#
+# #############
+# #!/bin/bash
+# #SBATCH --job-name=Trim
+# #SBATCH --nodes=1
+# #SBATCH --partition=std
+# #SBATCH --tasks-per-node=16
+# #SBATCH --time=12:00:00
+# #SBATCH --export=NONE
+# #SBATCH --error=error_Trim.txt
+# #SBATCH --mail-user=raphael.koll@uni-hamburg.de
+# #SBATCH --mail-type=ALL
+# source /sw/batch/init.sh
+
+# #mamba create --name MAMBA16S bioconda::trim-galore
+# conda activate MAMBA16S
+# 
+# for f1 in *_R1_001.fastq.gz
+# do
+#         f2=${f1%%_R1_001.fastq.gz}"_R2_001.fastq.gz"
+#         trim_galore --paired --fastqc -o trim_galore/ $f1 $f2
+# done
+# 
+# #Default settings https://github.com/FelixKrueger/TrimGalore/blob/master/Docs/Trim_Galore_User_Guide.md
+# 
+# #########
+# #MultiQC#
+# #########
+# source /usw/anaconda3/etc/profile.d/conda.sh
+# conda activate MambaRNAseq
+# multiqc .
+# 
+# rm -r multiqc_data
+# mv multiqc_report Batch2__l6fbp_multiqc_report
+```
+
+## 1.3 Primer Removal
+
+Specifically removing the 16S Primers 
+FWD = "CCTACGGGAGGCAGCAG"
+REV = "GGACTACHVGGGTWTCTAAT"
+
+```{r}
+# #####################
+# #Manual setup R once#
+# # source /sw/batch/init.sh
+# # source /usw//miniforge3/etc/profile.d/conda.sh
+# # conda activate MAMBA16S
+# # mamba install -c conda-forge r-base=4.4
+# # #mamba create --name MAMBA16S bioconda::trim-galore
+# # conda activate MAMBA16S
+# # R
+# install.packages("remotes")
+#    remotes::install_version("Matrix", version = "1.6-1")
+# 
+# #Manually find and install packages: https://cran.r-project.org/src/contrib/Archive/MASS/
+#    #https://stackoverflow.com/questions/17082341/installing-older-version-of-r-package
+# packageurl <- "http://cran.r-project.org/src/contrib/Archive/MASS/MASS_7.3-58.tar.gz"
+# install.packages(packageurl, repos=NULL, type="source")
+# 
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("dada2")
+# BiocManager::install("ggplot2")
+# BiocManager::install("ShortRead")
+# 
+# 
+# 
+# #!/bin/bash
+# #SBATCH --job-name=dada2
+# #SBATCH --nodes=1
+# #SBATCH --tasks-per-node=16
+# #SBATCH --partition=std 
+# #SBATCH --time=12:00:00
+# #SBATCH --export=NONE
+# #SBATCH --error=error_filterNandPrimer-06.06.24.txt
+# #SBATCH --mail-user=raphael.koll@uni-hamburg.de
+# #SBATCH --mail-type=ALL
+# source /sw/batch/init.sh
+# source /usw/miniforge3/etc/profile.d/conda.sh
+# conda activate MAMBA16S
+# cd /work/16S//06.06.2024-Dada2Individual
+# 
+# R -q -f cutadapt-filterNandPrimer-06.06.24.R > filterNandPrimer-06.06.24.out 2>&1
+# 
+# 
+# ######################################
+# #cutadapt-filterNandPrimer-26.07.23.R#
+# ######################################
+# path <- "/work//16S/Reads/samples/256/trim_galore"
+# pathOut <- "/work/16S/Reads/samples/256/trim_galore"
+# pathTrainsets <-"/work/16S/trainsets"
+# Date <- "06.06.24"
+# 
+# library(dada2)
+# library(ShortRead)
+# library(ggplot2)
+# head(list.files(path))
+# # Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+# fnFs <- sort(list.files(path, pattern="R1_001_val_1.fq.gz", full.names = TRUE))
+# fnRs <- sort(list.files(path, pattern="R2_001_val_2.fq.gz", full.names = TRUE))
+# # Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+# #sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+# sample.names <- sapply(strsplit(basename(fnFs), "R1_001_val_1.fq.gz"), `[`, 1)
+# 
+# ##cutadapt - identify and remove primer sequences: #Primer sequences: 341F and 806R used 
+# FWD = "CCTACGGGAGGCAGCAG"
+# REV = "GGACTACHVGGGTWTCTAAT"
+# 
+# ##########START cutadapt PRIMER SCREENING AND REMOVAL##################
+# allOrients <- function(primer) {
+#   # Create all orientations of the input sequence
+#   require(Biostrings)
+#   dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+#   orients <- c(Forward = dna, Complement = Biostrings::complement(dna), Reverse = Biostrings::reverse(dna),
+#                RevComp = Biostrings::reverseComplement(dna))
+#   return(sapply(orients, toString))  # Convert back to character vector
+# }
+# FWD.orients <- allOrients(FWD)
+# REV.orients <- allOrients(REV)
+# FWD.orients
+# 
+# fnFs.filtN <- file.path(path, "filtN", basename(fnFs)) # Put N-filtered files in filtN/ subdirectory
+# fnRs.filtN <- file.path(path, "filtN", basename(fnRs))
+# 
+# ##Takes some minutes when not running via batch system##
+# filterAndTrim(fnFs, fnFs.filtN, fnRs, fnRs.filtN, maxN = 0, multithread = FALSE)
+# 
+# 
+# primerHits <- function(primer, fn) {
+#   # Counts number of reads in which the primer is found
+#   nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+#   return(sum(nhits > 0))
+# }
+# rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filtN[[1]]),
+#       FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.filtN[[1]]),
+#       REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filtN[[1]]),
+#       REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.filtN[[1]]))
+# 
+# #Forward Complement Reverse RevComp
+# #FWD.ForwardReads   27814          0       0       0
+# #FWD.ReverseReads       0          0       0      21
+# #REV.ForwardReads       0          0       0       2
+# #REV.ReverseReads   26861          0       0       0
+# 
+# cutadapt <- paste0("/usw/miniforge3/envs/MAMBA16S/bin/cutadapt") #Conda path to cutadapt
+# system2(cutadapt, args = "--version") # Run shell commands from R
+# 
+# path.cut <- file.path(path, "cutadapt")
+# if(!dir.exists(path.cut)) dir.create(path.cut)
+# fnFs.cut <- file.path(path.cut, basename(fnFs))
+# fnRs.cut <- file.path(path.cut, basename(fnRs))
+# 
+# FWD.RC <- dada2:::rc(FWD)
+# REV.RC <- dada2:::rc(REV)
+# # Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+# R1.flags <- paste("-g", FWD, "-a", REV.RC, "--minimum-length 100")
+# # Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+# R2.flags <- paste("-G", REV, "-A", FWD.RC, "--minimum-length 100")
+# # Run Cutadapt
+# for(i in seq_along(fnFs)) {
+#   system2(cutadapt, args = c(R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV from reads
+#                              "-o", fnFs.cut[i], "-p", fnRs.cut[i], # output files
+#                              fnFs.filtN[i], fnRs.filtN[i])) # input files
+# }
+# 
+# ##TAKES some minutes when not run via batch##
+# path.cut <- file.path(path, "cutadapt")
+# if(!dir.exists(path.cut)) dir.create(path.cut)
+# fnFs.cut <- file.path(path.cut, basename(fnFs))
+# fnRs.cut <- file.path(path.cut, basename(fnRs))
+# 
+# FWD.RC <- dada2:::rc(FWD)
+# REV.RC <- dada2:::rc(REV)
+# # Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+# R1.flags <- paste("-g", FWD, "-a", REV.RC,"--minimum-length 100")
+# # Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+# R2.flags <- paste("-G", REV, "-A", FWD.RC,"--minimum-length 100")
+# # Run Cutadapt
+# for(i in seq_along(fnFs)) {
+#   system2(cutadapt, args = c(R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV from reads
+#                              "-o", fnFs.cut[i], "-p", fnRs.cut[i], # output files
+#                              fnFs.filtN[i], fnRs.filtN[i])) # input files
+# }
+# 
+# rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.cut[[1]]),
+#       FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.cut[[1]]),
+#       REV.ForwardReads = sapply(REV.orients, primerHits,fn = fnFs.cut[[1]]),
+#       REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.cut[[1]]))
+# 
+# # Forward and reverse fastq filenames have the format:
+# cutFs <- sort(list.files(path.cut, pattern = "R1.fastq", full.names = TRUE))
+# cutRs <- sort(list.files(path.cut, pattern = "R2.fastq", full.names = TRUE))
+# 
+# # Extract sample names, assuming filenames have format:
+# get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+# sample.names <- unname(sapply(cutFs, get.sample.name))
+# head(sample.names)
+# 
+# ############FINISH CUTADAPT PRIMER REMOVAL######################
+# 
+# ############ Plot selected QualityPlot #########################
+# library(dada2)
+# library(ShortRead)
+# library(ggplot2)
+# head(list.files(path))
+# # Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+# path.cut <- file.path(path, "cutadapt")
+# head(list.files(path.cut))
+# cutFs <- sort(list.files(path.cut, pattern = "R1.fastq", full.names = TRUE))
+# cutRs <- sort(list.files(path.cut, pattern = "R2.fastq", full.names = TRUE))
+# for(i in 1:length(cutFs[c(1,10,15,20,30,50,100)])){
+#     plot.quals <- plotQualityProfile(cutFs[[i]])
+#     g <- gsub( "_.*$", "", basename(cutFs[[i]]))
+#     ggsave(plot.quals, filename = paste(g,"F.png", sep="_"), path = pathOut, device='png', dpi=300, width = 8,
+#     height = 6)}
+# for(i in 1:length(cutRs[c(1,10,15,20,30,50,100)])){
+#     plot.quals <- plotQualityProfile(cutRs[[i]])
+#     g <- gsub( "_.*$", "", basename(cutRs[[i]]))
+#     ggsave(plot.quals, filename = paste(g,"R.png", sep="_"), path = pathOut, device='png', dpi=300, width = 8,
+#     height = 6)}
+```
+
+## 1.5 PreRun for seq length determination
+
+I ran the dada2 pipeline below several times with different settings
+Especially the seqlength has to be evaluated
+truncLen=c(270,190)
+truncLen=c(270,200) #Turns out to be the best -> dada2-pipeline-470-02.08.23.R
+truncLen=c(270,210)
+
+```{r}
+###############################################################################
+#Step3 Run dada2 Filter-Chimera-SeqError-Taxa-Pipeline once in full to have it#
+###############################################################################
+#Steps done before:
+    #Trim-Galore cut out Illumina adapters (in about 30% of the reads)
+########
+#Batch2#
+########
+#truncLen=c(270,190)
+
+# "GCAU21BBEB1" 28486 27300 27145 27227 26833 26347
+# "GCAU21BBEB2" 20615 19723 19677 19703 19578 19276
+# "GCAU21BBEB3" 31033 29541 29094 29382 28326 27361
+
+# 276   288   318   331   335   346   351   360   364   369   371   373   374
+#   1     1     1     1     1     1     1     1     1     1     1     5     9
+# 375   376   381   382   384   385   386   387   388   389   390   391   392
+#  14    14     2     1     5     4     8     8     7     5     2     3     6
+# 393   394   395   396   397   398   399   400   401   402   403   404   405
+#   6     2     1    15    10    27    28     7    19   103   155  4238  2264
+# 406   407   408   409   410   411   412   413   414   415   416   417   418
+# 999   849   386  1405   124   129    51    48    10    26    76    24    68
+# 419   420   421   422   423   424   425   426   427   428   429   430   431
+# 564   135   536   265   482  4333   212   182   117  2062 28997  7981   254
+# 432   433   434   435   436   437   438   439   440   441   442   443   444
+#  17     1     1    12    29     3     9     6     7   159     2     4    20
+# 445   446   447   448
+#  49   955   253     9
+
+#truncLen=c(270,200)
+
+# "GCAU21BBEB1" 28486 27222 27067 27158 26725 26258
+# "GCAU21BBEB2" 20615 19637 19591 19596 19470 19168
+# "GCAU21BBEB3" 31033 29387 28943 29213 28134 27168
+
+# 276   288   318   331   335   346   351   360   364   369   373   374   375
+#   1     1     1     1     1     1     1     1     1     1     5     9    14
+# 376   381   382   384   385   386   387   388   389   390   391   392   393
+#  14     2     1     5     5     8     8     7     5     2     3     6     6
+# 394   395   396   397   398   399   400   401   402   403   404   405   406
+#   2     1    16    10    27    28     7    20   104   157  4230  2244  1000
+# 407   408   409   410   411   412   413   414   415   416   417   418   419
+# 826   337  1314   115   131    49    44    10    25    76    21    64   432
+# 420   421   422   423   424   425   426   427   428   429   430   431   432
+# 140   449   230   458  3415   199   168   110  1801 25333  6771   236    14
+# 433   434   435   436   437   438   439   440   441   442   443   444   445
+#   2     1     1    19     3     9     2     6   111     1     3    20    38
+# 446   447   448   449   450   451   452   453   455   458
+# 743   139    10     7    12    19    58     3     1     1
+
+#truncLen=c(280,200)
+
+# "GCAU21BBEB1" 28486 13843 13707 13781 13440 13293
+# "GCAU21BBEB2" 20615 9963 9922 9934 9832 9759
+# "GCAU21BBEB3" 31033 13050 12688 12934 12115 11848
+
+# 288   335   346   351   364   373   374   375   376   381   382   384   386
+#   1     1     1     1     1     4     6     9     7     2     1     4     4
+# 387   388   389   390   391   392   393   394   395   396   397   398   399
+#   4     3     2     2     3     6     5     2     1     9     6    20    22
+# 400   401   402   403   404   405   406   407   408   409   410   411   412
+#   8     5    37   109  2931  1741   731   589   175   723    76    73    42
+# 413   414   415   416   417   418   419   420   421   422   423   424   425
+#  30     7    23    60    16    48   264   111   302   187   335  2063   144
+# 426   427   428   429   430   431   432   433   434   435   436   437   438
+# 114    97  1321 13713  3505   173    13     2     1     1    16     3     9
+# 439   440   441   442   443   444   445   446   447   448   449   450   453
+#   1     4   105     8     3     7    34   604   118    29    10    18     1
+# 459   461   462   463   465   466   468
+#   6     1     3     1    14     3     1
+
+########
+#Batch1#
+########
+
+#truncLen=c(270, 190)
+
+# 272   273   274   277   280   281   287   292   295   296   297   298   300
+#   3     1     2     1     1     1     1     4     1     1     1     1     1
+# 305   306   309   310   315   317   318   319   321   322   328   330   333
+#   2     1     2     1     1     1     1     1     1     2     1     1     1
+# 335   337   338   340   344   346   347   351   360   362   364   365   367
+#   1     1     1     1     1     3     2     1     1     1     2     5     2
+# 369   372   373   374   375   376   377   380   381   382   384   385   386
+#   1     1     1    30    45    16     1     3     1     2     6     7    27
+# 387   388   389   390   391   392   393   394   395   396   397   398   399
+#  11    17     5     1     3     1     1     5     3    26    22    39    41
+# 400   401   402   403   404   405   406   407   408   409   410   411   412
+#   8    69   145   188  6600  3124  1230  1387   702  3082   266   184    50
+# 413   414   415   416   417   418   419   420   421   422   423   424   425
+#  46    41    39    98    28   126   506   137   415   268   628  6067   356
+# 426   427   428   429   430   431   432   433   434   435   437   439   440
+# 373   137  2655 23408  8938   666    76     1     5     2     4    10     4
+# 441   442   443   444   445   446   447   448   449   450   451   452   453
+#  10    16     6     1    15    42    79   100    28    48    10     9     3
+# 455   456
+#   1     1
+
+#truncLen=c(280,200)
+
+# "GCSP22BBEB1" 33516 23334 23192 23246 21862 21365
+# "GCSP22BBEB3" 56419 40294 39882 40133 37327 35385
+# "GCSP22BBEB5" 37299 28810 28728 28719 27016 25886
+
+# 272   273   274   277   280   281   287   292   295   296   297   298   300
+#   3     1     2     1     1     1     1     4     1     1     1     1     1
+# 305   306   309   310   315   317   318   319   321   322   328   330   333
+#   2     1     2     1     1     1     1     1     1     2     1     1     1
+# 335   337   338   340   344   346   347   351   360   362   364   365   367
+#   1     1     1     1     1     3     2     1     1     1     2     2     2
+# 369   372   373   374   375   376   377   380   381   382   384   385   386
+#   1     1     1    29    42    13     1     2     1     2     5     5    22
+# 387   388   389   390   391   392   393   394   395   396   397   398   399
+#  11    15     5     1     3     1     1     5     3    26    21    37    39
+# 400   401   402   403   404   405   406   407   408   409   410   411   412
+#   7    48   126   171  5610  2774  1120  1260   568  2573   209   168    40
+# 413   414   415   416   417   418   419   420   421   422   423   424   425
+#  49    36    34    86    29   107   454   118   368   233   581  5647   319
+# 426   427   428   429   430   431   432   433   434   435   437   439   440
+# 299   124  2257 19737  7462   551    61     1     5     2     5     7     3
+# 441   442   443   444   445   446   447   448   449   450   451   452   453
+#  10    12     6     1    12    43    90    83    19    27     1    12     1
+# 455   456   464   465   466   468
+#   1     1     1     1     2     1
+
+
+##############
+#Batch1-reseq#
+##############
+
+#truncLen=c(270, 190)
+
+# "GCSP22BBEB1" 19004 17077 16949 17017 16668 16330
+# "GCSP22BBEB3" 34286 31180 30817 31061 29950 28338
+# "GCSP22BBEB5" 22353 20392 20311 20346 20105 19101
+
+# 272   274   292   295   296   298   305   306   309   317   318   321   322
+#    2     1     2     1     1     1     2     1     2     2     1     1     1
+#  325   327   328   333   335   337   338   340   344   364   365   367   372
+#    1     1     1     1     1     1     1     1     1     1     2     4     1
+#  373   374   375   376   378   380   381   382   383   384   385   386   387
+#    2    17    31     8     1     2     1     2     1     6     3     7     6
+#  388   389   390   392   393   394   395   396   397   398   399   400   401
+#    6     3     1     1     1     1     2    19    12    24    19     4    45
+#  402   403   404   405   406   407   408   409   410   411   412   413   414
+#   94   125  4494  2234   839   954   463  2142   209   134    40    38    30
+#  415   416   417   418   419   420   421   422   423   424   425   426   427
+#   28    87    22    98   406   110   330   236   502  5642   287   272   130
+#  428   429   430   431   432   433   434   435   436   437   438   439   440
+# 2284 19685  7661   666    58     3     4     4     1     2    10     8     2
+#  441   442   443   444   445   446   447   448
+#   16    20    18    17    41   122    75    86
+
+#truncLen=c(270,200)
+
+# "GCSP22BBEB1" 19004 16432 16304 16369 15988 15667
+# "GCSP22BBEB3" 34286 30021 29674 29868 28547 27109
+# "GCSP22BBEB5" 22353 19925 19841 19868 19592 18599
+
+# 272   274   290   292   295   296   298   305   306   309   317   318   321
+#    2     1     1     1     1     1     1     2     1     2     2     1     1
+#  322   325   327   328   333   335   337   340   344   364   365   367   373
+#    1     1     1     1     1     1     1     1     1     1     2     2     2
+#  374   375   376   378   380   381   382   384   385   386   387   388   389
+#   17    31     9     1     1     1     2     6     3     9     6     6     2
+#  390   392   393   394   395   396   397   398   399   400   401   402   403
+#    1     1     1     1     2    20    11    24    19     3    45    93   130
+#  404   405   406   407   408   409   410   411   412   413   414   415   416
+# 4220  2078   802   900   350  1754   185   113    33    30    27    20    70
+#  417   418   419   420   421   422   423   424   425   426   427   428   429
+#   20    76   304    99   282   176   422  3894   237   195   100  1627 14291
+#  430   431   432   433   434   435   436   437   439   440   441   442   443
+# 5358   430    50     5     3     2     1     5     6     1    18    15    21
+#  444   445   446   447   448   449   450   451   452   453   455   456
+#    5    19    98    69    75    15    51    28     8    17     1     1
+
+#truncLen=c(280,200)
+
+# 292  301  305  306  309  318  321  322  327  328  335  340  344  365  367  373
+#    1    1    2    1    1    1    1    1    1    1    1    1    1    1    2    2
+#  374  375  376  380  381  382  384  386  387  388  389  392  393  394  396  397
+#   11   18    2    1    1    2    1    1    2    4    1    1    1    1    7    3
+#  398  399  400  401  402  403  404  405  406  407  408  409  410  411  412  413
+#   20   15    2   12   18   54 2481 1349  544  538  184 1052   52   42   19   22
+#  414  415  416  417  418  419  420  421  422  423  424  425  426  427  428  429
+#   20   17   43   10   49  179   74  183  130  289 1905  147  105   82 1060 8751
+#  430  431  432  433  434  435  436  437  439  440  441  442  443  444  445  446
+# 2808  252   37    2    2    1    1    2    3    4   15    9   19    4   18   82
+#  447  448  449  450  451  452  453  455  462  465  468
+#   51   45    2   44   26    3   14    1    1    1    1
+
+```
+
+## 1.6 Dada2
+
+```{r}
+# #!/bin/bash
+# #SBATCH --job-name=dada2
+# #SBATCH --nodes=1
+# #SBATCH --tasks-per-node=16
+# #SBATCH --partition=stl  #Takes 5 - 24 hours 
+# #SBATCH --time=7-00:00:00
+# #SBATCH --export=NONE
+# #SBATCH --error=dada2-pipeline-470-02.08.23.txt
+# #SBATCH --mail-user=raphael.koll@uni-hamburg.de
+# #SBATCH --mail-type=ALL
+# source /sw/batch/init.sh
+# 
+# conda activate MAMBA16S
+# cd /work/16S/Batch1_Run1/02.08.23
+# R -q -f dada2-pipeline-470-02.08.23.R  > dada2-pipeline-470-02.08.23.out 2>&1
+# 
+# ################
+# #dada2-pipeline#
+# ################
+# path          <- "/work/16S/Batch1_Run1/trim_galore"
+# pathOut       <- "/work/16S/Batch1_Run1/02.08.23"
+# pathTrainsets <- "/work/16S/trainsets"
+# Date          <- "02.08.23"
+# Length        <- "470"
+# 
+# library(dada2)
+# library(ShortRead)
+# library(ggplot2)
+# 
+# head(list.files(path))
+# path.cut <- file.path(path, "cutadapt")
+# head(list.files(path.cut))
+# fnFs <- sort(list.files(path.cut, pattern = "R1_001_val_1.fq", full.names = TRUE))
+# fnRs <- sort(list.files(path.cut, pattern = "R2_001_val_2.fq", full.names = TRUE))
+# sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+# head(sample.names)
+# 
+# ########
+# #Filter#
+# ########
+# filtFs <- file.path(path.cut, paste("filtered", Length, sep="_"), paste0(sample.names, "_F_filt.fastq"))
+# filtRs <- file.path(path.cut, paste("filtered", Length, sep="_"), paste0(sample.names, "_R_filt.fastq"))
+# names(filtFs) <- sample.names
+# names(filtRs) <- sample.names
+# 
+# out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs,
+#               maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+#               compress=TRUE, multithread=TRUE, verbose=TRUE,truncLen=c(270,200))
+# out
+# 
+# saveRDS(out, file.path(pathOut,paste(Date, Length, "out.rds", sep="_")))
+# 
+# filtFs <- filtFs[file.exists(filtFs)]
+# filtRs <- filtRs[file.exists(filtRs)]
+# 
+# ###################
+# #Learn Error Rates#
+# ###################
+# errF <- learnErrors(filtFs, multithread=TRUE)
+# saveRDS(errF, file.path(pathOut, paste(Date, Length,  "errF.rds", sep="_")))
+# errR <- learnErrors(filtRs, multithread=TRUE)
+# 
+# saveRDS(errR, file.path(pathOut, paste(Date, Length,"errR.rds", sep="_")))
+# library(ggplot2)
+# A<- plotErrors(errF, nominalQ=TRUE)
+# ggsave(A, filename = paste(Date, Length, "errF.png", sep="_"),path= pathOut, device='png', dpi=300, width = 10,height = 10)
+# B<- plotErrors(errR, nominalQ=TRUE)
+# ggsave(B, filename = paste(Date, Length, "errR.png", sep="_"),path=pathOut, device='png', dpi=300, width = 10,height = 10)
+# 
+# ###############
+# #Infering ASVs#
+# ###############
+# errF<-readRDS(file.path(pathOut, paste(Date,Length,"errF.rds", sep="_")))
+# errR<-readRDS(file.path(pathOut, paste(Date,Length,"errR.rds", sep="_")))
+# 
+# #Inferring ASVs
+# dadaFs <- dada(filtFs, err=errF, multithread=TRUE, pool=TRUE)
+# saveRDS(dadaFs, file.path(pathOut, paste(Date,Length,"dadaFs.rds", sep="_")))
+# dadaFs<-readRDS(file.path(pathOut, paste(Date,Length,"dadaFs.rds", sep="_")))
+# 
+# dadaRs <- dada(filtRs, err=errR, multithread=TRUE, pool=TRUE)
+# saveRDS(dadaRs, file.path(pathOut, paste(Date,Length,"dadaRs.rds", sep="_")))
+# dadaRs<-readRDS(file.path(pathOut, paste(Date,Length,"dadaRs.rds", sep="_")))
+# 
+# dadaFs[[1]]
+# 
+# ####################
+# #merge paired reads#
+# ####################
+# mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+# saveRDS(mergers, file.path(pathOut, paste(Date,Length,"mergers.rds", sep="_")))
+# # Inspect the merger data.frame from the first sample
+# head(mergers[[1]])
+# #Construct sequence table
+# seqtab <- makeSequenceTable(mergers)
+# 
+# dim(seqtab)
+# saveRDS(seqtab, file.path(pathOut, paste(Date,Length,"seqtab.rds", sep="_")))
+# seqtab<-readRDS(file.path(pathOut, paste(Date,Length,"seqtab.rds", sep="_")))
+# #Inspect distribution of sequence lengths
+# table(nchar(getSequences(seqtab)))
+# 
+# #################
+# #Remove chimeras#
+# #################
+# seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+# dim(seqtab.nochim) #Check dimensions to see if the a good number of samples have made it into the table with a good number of reads
+# 
+# sum(seqtab.nochim)/sum(seqtab) #Check the proportion of reads that made it past the chimera check
+# 
+# saveRDS(seqtab.nochim, file.path(pathOut, paste(Date,Length,"seqtab.nochim.rds", sep="_")))
+# seqtab.nochim<-readRDS(file.path(pathOut, paste(Date,Length,"seqtab.nochim.rds", sep="_")))
+# 
+# ##################################
+# #Track reads through the pipeline#
+# ##################################
+# 
+# dadaFs  <-readRDS(file.path(pathOut, paste(Date, Length, "dadaFs.rds", sep="_")))
+# dadaRs  <-readRDS(file.path(pathOut, paste(Date, Length,"dadaRs.rds", sep="_")))
+# out     <-readRDS(file.path(pathOut, paste(Date, Length,"out.rds", sep="_")))
+# mergers <-readRDS(file.path(pathOut, paste(Date, Length,"mergers.rds", sep="_")))
+# 
+# getN <- function(x) sum(getUniques(x)) #See how many unique sequences there are? Very tired, will check later.
+# track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim)) #As it says on the box
+# # If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+# colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim") #Set column names
+# rownames(track) <- sample.names #Label rownames for each sample
+# head(track) #Check to see the proportion of samples that made it through the whole process.
+# write.table(track, file.path(pathOut, paste(Date, Length,"Track_reads_through_pipeline.txt", sep="_")))
+# ReadNum<- read.table(file.path(pathOut, paste(Date, Length,"Track_reads_through_pipeline.txt", sep="_")))
+# write.csv2(track, file.path(pathOut, paste(Date, Length,"Track_reads_through_pipeline.csv", sep="_")), row.names = T, sep=";")
+# 
+# #################
+# #Assign Taxonomy#
+# #################
+# taxa_wSpecies <- assignTaxonomy(seqtab.nochim, file.path(pathTrainsets, "silva_nr99_v138.1_wSpecies_train_set.fa.gz"), multithread=TRUE)
+# 
+# #In this step species level is already included <- but only for long-reads reliable!
+# # Extensions: The dada2 package also implements a method to make species level assignments based on exact matching between ASVs and sequenced reference strains. Recent analysis suggests that exact matching (or 100% identity) is the only appropriate way to assign species to 16S gene fragments. Currently, species-assignment training fastas are available for the Silva and RDP 16S databases. To follow the optional species addition step, download the silva_species_assignment_v132.fa.gz file, and place it in the directory with the fastq files.
+# #https://benjjneb.github.io/dada2/assign.html#species-assignment
+# # Fast and appropriate species-level assignment from 16S data is provided by the assignSpecies method. assignSpecies uses exact string matching against a reference database to assign Genus species binomials. In short, query sequence are compared against all reference sequences that had binomial genus-species nomenclature assigned, and the genus-species of all exact matches are recorded and returned if it is unambiguous. Recent results indicate that exact matching (or 100% identity) with amplicon sequence variants (ASVs) is the only appropriate method for species-level assignment to high-throughput 16S amplicon data.
+# 
+# taxa <- assignTaxonomy(seqtab.nochim, file.path(pathTrainsets, "silva_nr99_v138.1_train_set.fa.gz"), multithread=TRUE)
+# taxa <- addSpecies(taxa, file.path(pathTrainsets, "silva_species_assignment_v138.1.fa.gz"))
+# 
+# #When you want to do this it is nessessary to in the first step NOT TAKE THE _wSpecies_train_set.fa.gz otherwise we have Species twice in the data
+# 
+# taxa.print <- taxa # Removing sequence rownames for display only
+# rownames(taxa.print) <- NULL #Superflous information, get rid
+# taxa.print # See if it looks good
+# 
+# saveRDS(taxa, file.path(pathOut, paste(Date,Length, "Taxa_Species.rds", sep="_")))
+# saveRDS(taxa_wSpecies, file.path(pathOut, paste(Date,Length, "Taxa_wSpecies.rds", sep="_")))
+```
+
+## 1.7 Merge Runs and assign taxonomy
+
+I use the seqtabs from the previous step to determine chimeras from all data together and assign one taxonomy
+Batch1 and Batch1_reseq have same sample names and are merged
+Batch2 is added in the dataset as individual samples 
+
+```{r}
+# ###############################################################
+# #Step4 Merge the SeqTabs from different sequencing runs and do#
+# ###############################################################
+# #!/bin/bash
+# #SBATCH --job-name=dada2-merge
+# #SBATCH --nodes=1
+# #SBATCH --tasks-per-node=16
+# #SBATCH --partition=big 
+# #SBATCH --time=7-00:00:00
+# #SBATCH --export=NONE
+# #SBATCH --error=dada2-merge-07.06.24.txt
+# #SBATCH --mail-user=raphael.koll@uni-hamburg.de
+# #SBATCH --mail-type=ALL
+# source /sw/batch/init.sh
+# source /usw/miniforge3/etc/profile.d/conda.sh
+# conda activate MAMBA16S
+# /work/16S/07.06.2024-MergeSeqtabs
+# R -q -f dada2-merge-07.06.24.R  > dada2-merge-07.06.24.out 2>&1
+# 
+# 
+# 
+# #################
+# #Create R script#
+# #################
+#     #Steps done before:
+#     #Cutadapt cut our Primer sequences 
+#     #Trim-Galore cut out Illumina adapters (in about 30% of the reads)
+# 
+# path <- "/work/16S//07.06.2024-MergeSeqtabs"
+# pathOut <- "/work//16S/07.06.2024-MergeSeqtabs"
+# pathTrainsets <-"/work/16S/trainsets"
+# Date <- "07.06.24"
+# 
+# library(dada2)
+# 
+# #https://benjjneb.github.io/dada2/bigdata_paired.html
+# #https://github.com/benjjneb/dada2/issues/1406
+# st1 <-readRDS(file.path(pathOut, "Batch1_Run1_31.07.23_470_seqtab.rds"))
+# st2 <-readRDS(file.path(pathOut, "Batch1_Run1_ReSeq_31.07.23_470_seqtab.rds"))
+# st3 <-readRDS(file.path(pathOut, "Batch2_Run2_26.07.23_470_seqtab.rds"))
+# 
+# rownames(st1) <- paste(rownames(st1), "RK", sep="_")
+# rownames(st2) <- paste(rownames(st2), "RK", sep="_")
+# rownames(st3) <- paste(rownames(st3), "RK", sep="_")
+# 
+# st4 <- readRDS(file.path(pathOut, "06.06.24-256_470_seqtab.rds"))
+# st5 <- readRDS(file.path(pathOut, "06.06.24-256_470_seqtab.rds"))
+# st6 <- readRDS(file.path(pathOut, "06.06.24-256_470_seqtab.rds"))
+# 
+# rownames(st4) <- paste(rownames(st4), "256", sep="_")
+# rownames(st5) <- paste(rownames(st5), "257", sep="_")
+# rownames(st6) <- paste(rownames(st6), "258", sep="_")
+# 
+# st.all <- mergeSequenceTables(st1, st2, st3, st4, st5, st6,  repeats = "sum")
+# 
+# #################
+# #Remove chimeras#
+# #################
+# seqtab.nochim <- removeBimeraDenovo(st.all, method="consensus", multithread=TRUE, verbose=TRUE)
+# dim(seqtab.nochim) #Check dimensions to see if the a good number of samples have made it into the table with a good number of reads
+# 
+# sum(seqtab.nochim)/sum(st.all) #Check the proportion of reads that made it past the chimera check
+# 
+# saveRDS(seqtab.nochim, file.path(pathOut, paste(Date, "seqtab.nochim.rds", sep="")))
+# 
+# ##################################
+# #Track reads through the pipeline#
+# ##################################
+# #dadaFs<-readRDS(file.path(pathOut, "dadaFs.rds"))
+# #dadaRs<-readRDS(file.path(pathOut, "dadaRs.rds"))
+# #out<-readRDS(file.path(pathOut, "out.rds"))
+# #mergers <-readRDS(file.path(pathOut, "mergers.rds"))
+# 
+# #getN <- function(x) sum(getUniques(x)) #See how many unique sequences there are? Very tired, will check later.
+# #track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim)) #As it says on the box
+# # If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+# #colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim") #Set column names
+# #rownames(track) <- sample.names #Label rownames for each sample
+# #head(track) #Check to see the proportion of samples that made it through the whole process.
+# #write.table(track, file.path(pathOut, "Track_reads_through_pipeline.txt"))
+# #ReadNum<- read.table(file.path(pathOut, "Track_reads_through_pipeline.txt"))
+# #write.csv2(track, file.path(pathOut, "Track_reads_through_pipeline.csv"), row.names = T, sep=";")
+# 
+# #################
+# #Assign Taxonomy#
+# #################
+# 
+# taxa <- assignTaxonomy(seqtab.nochim, file.path(pathTrainsets, "silva_nr99_v138.1_train_set.fa.gz"), multithread=TRUE)
+# taxa <- addSpecies(taxa, file.path(pathTrainsets, "silva_species_assignment_v138.1.fa.gz"))
+# saveRDS(taxa, file.path(pathOut, paste(Date, "merge-Taxa_Species.rds", sep="")))
+# #When you want to do this it is nessessary to in the first step NOT TAKE THE _wSpecies_train_set.fa.gz otherwise we have Species twice in the data
+# 
+# taxa.print <- taxa # Removing sequence rownames for display only
+# rownames(taxa.print) <- NULL #Superflous information, get rid
+# head(taxa.print) # See if it looks good
+# 
+# #taxa_wSpecies <- assignTaxonomy(seqtab.nochim, file.path(pathTrainsets, "silva_nr99_v138.1_wSpecies_train_set.fa.gz"), multithread=TRUE)
+# 
+# #In this step species level is already included <- but only for long-reads reliable!
+# # Extensions: The dada2 package also implements a method to make species level assignments based on exact matching between ASVs and sequenced reference strains. Recent analysis suggests that exact matching (or 100% identity) is the only appropriate way to assign species to 16S gene fragments. Currently, species-assignment training fastas are available for the Silva and RDP 16S databases. To follow the optional species addition step, download the silva_species_assignment_v132.fa.gz file, and place it in the directory with the fastq files.
+# #https://benjjneb.github.io/dada2/assign.html#species-assignment
+# # Fast and appropriate species-level assignment from 16S data is provided by the assignSpecies method. assignSpecies uses exact string matching against a reference database to assign Genus species binomials. In short, query sequence are compared against all reference sequences that had binomial genus-species nomenclature assigned, and the genus-species of all exact matches are recorded and returned if it is unambiguous. Recent results indicate that exact matching (or 100% identity) with amplicon sequence variants (ASVs) is the only appropriate method for species-level assignment to high-throughput 16S amplicon data.
+# 
+# #saveRDS(taxa_wSpecies, file.path(pathOut, paste(Date, "merge-Taxa_wSpecies.rds", sep="")))
+# 
+
+````
+
+## 1.8 ENA Submit
+
+```{r}
+# ###############################################
+# #Copy all raw files into the ENA upload folder#
+# /work//ENA/ElbeEstuarineFishGillMicrobiota2024
+# 
+# ###################################################
+# #for the technical replicates name _run1 and _run2#
+# for file in *.fastq.gz; do
+#   mv "$file" "${file%.fastq.gz}_run1.fastq.gz"
+# done
+# 
+# ##################################################
+# #Concatenating technical replicates into one file#
+# ##################################################
+# for file in *_run1.fastq.gz; do
+#   base="${file%_run1.fastq.gz}"
+#   file1="${base}_run1.fastq.gz"
+#   file2="${base}_run2.fastq.gz"
+#   if [[ -f "$file2" ]]; then
+#     output="${base}.fastq.gz"
+#     zcat "$file1" "$file2" | gzip > "$output"
+#     echo "Concatenated $file1 and $file2 into $output"
+#   else
+#     echo "No matching file for $file1"
+#   fi
+# done
+# 
+# 
+# #Renaming all files: 
+# for file in *_R1_001.fastq.gz; do
+#   mv "$file" "${file%_R1_001.fastq.gz}_gillswab_R1.fastq.gz"
+# done
+# 
+# for file in *_gillswab_R1.fastq.gz; do
+#   mv "$file" "${file%_R1_001.fastq.gz}_gillswab_R1.fastq.gz"
+# done
+# 
+# #####
+# #16S#
+# #####
+# for file in *_gillswab_R1.fastq.gz; do
+#     # Extract name without the "_gill_R1.fastq.gz" part
+#     name=$(echo "$file" | sed 's/_gillswab_R1.fastq.gz//')
+#     # Create Manifest file
+#     manifest_file="Manifest-${name}_gillswab.txt"
+#     # Write information to the Manifest file
+#     echo "STUDY PRJEB77621" > "$manifest_file"
+#     echo "SAMPLE ${name}_gillswab" >> "$manifest_file"
+#     echo "INSTRUMENT Illumina MiSeq" >> "$manifest_file"
+#     echo "NAME ${name}_gillswab" >> "$manifest_file"
+#     echo "LIBRARY_SOURCE OTHER" >> "$manifest_file"
+#     echo "LIBRARY_SELECTION unspecified" >> "$manifest_file"
+#     echo "LIBRARY_STRATEGY AMPLICON" >> "$manifest_file"
+#     echo "FASTQ ${name}_gillswab_R1.fastq.gz" >> "$manifest_file"
+#     echo "FASTQ ${name}_gillswab_R2.fastq.gz" >> "$manifest_file"
+#     echo "Manifest created for $name"
+# done
+# 
+# for file in *_watersample_R1.fastq.gz; do
+#     # Extract name without the "_gill_R1.fastq.gz" part
+#     name=$(echo "$file" | sed 's/_watersample_R1.fastq.gz//')
+#     # Create Manifest file
+#     manifest_file="Manifest-${name}_watersample.txt"
+#     # Write information to the Manifest file
+#     echo "STUDY PRJEB77621" > "$manifest_file"
+#     echo "SAMPLE ${name}_watersample" >> "$manifest_file"
+#     echo "INSTRUMENT Illumina MiSeq" >> "$manifest_file"
+#     echo "NAME ${name}_watersample" >> "$manifest_file"
+#     echo "LIBRARY_SOURCE OTHER" >> "$manifest_file"
+#     echo "LIBRARY_SELECTION unspecified" >> "$manifest_file"
+#     echo "LIBRARY_STRATEGY AMPLICON" >> "$manifest_file"
+#     echo "FASTQ ${name}_watersample_R1.fastq.gz" >> "$manifest_file"
+#     echo "FASTQ ${name}_watersample_R2.fastq.gz" >> "$manifest_file"
+#     echo "Manifest created for $name"
+# done
+# 
+# #################
+# #Test ENA submit#
+# #################
+# wget https://github.com/enasequence/webin-cli/releases/download/7.3.1/webin-cli-7.3.1.jar
+# 
+# source /sw/batch/init.sh
+# module load java/oracle-jdk8u66
+# for file in Manifest-OESU21TWEB4_gillswab.txt; do
+#     java -jar /ENA/ElbeEstuarineFishGillMicrobiota2024/webin-cli-7.3.1.jar -userName=Webin-xxxx -password 'xxxxx' -context reads -manifest="$file" -validate
+# done
+# 
+# ############
+# #ENA SUBMIT#
+# ############
+# #!/bin/bash
+# #SBATCH --job-name=ENA-submit-ElbeEstuarineFishMicrobiota2024
+# #SBATCH --nodes=1
+# #SBATCH --tasks-per-node=16
+# #SBATCH --partition=std
+# #SBATCH --time=12:00:00
+# #SBATCH --export=NONE
+# #SBATCH --error=error_ENA-submit-ElbeEstuarineFishMicrobiota2024
+# #SBATCH --mail-user=raphael.koll@uni-hamburg.de
+# #SBATCH --mail-type=ALL
+# source /sw/batch/init.sh
+# module load java/oracle-jdk8u66
+# cd /work/ENA/ElbeEstuarineFishGillMicrobiota2024
+# for file in Manifest-*gillswab.txt; do
+#     java -jar /work//ENA/ElbeEstuarineFishGillMicrobiota2024/webin-cli-7.3.1.jar -userName=Webin-xxxxxx -password 'xxxx' -context reads -manifest="$file" -submit
+# done
+```
+
+
+
+
+

@@ -1,0 +1,1131 @@
+---
+title: "EstuarineFishGillMicrobiota_part1_21.07.24"
+output: html_document
+date: "2024-07-21"
+---
+
+Hand over from dada2 output to phyloseq followed by abundance filtering in the individual datasets
+Chapter 13 and 14 include visualizations of abiotic and stable isotope data. 
+
+# 1 Global Setup 
+
+## 1.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+GitClonePath <- "/Users/admin/Desktop/EstuarineFishGillMicrobiota"
+setwd(GitClonePath)
+
+path_Input_16S <- paste(GitClonePath, "Fish_Input_16S", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "Fish_Output_16S", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "Fish_Plots", sep="/")
+
+#Create Folder if not existing
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Output_16S")), dir.create(file.path(GitClonePath, "Fish_Output_16S")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Plots")), dir.create(file.path(GitClonePath, "Fish_Plots")), FALSE)
+
+```
+
+## 1.2 Packages
+
+```{r}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::snapshot()
+#packrat::restore()
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "ComplexHeatmap",
+#   "Biostrings",
+#   "BiocParallel",
+#   "BiocNeighbors",
+#   "BiocFileCache",
+#   "BiocBaseUtils",
+#   "ShortRead",
+#   "SummarizedExperiment",
+#   "TreeSummarizedExperiment",
+#   "phyloseq",
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   ), force =T)
+
+#install.packages("remotes")
+#remotes::install_github("jfq3/ggordiplots")
+#install.packages("devtools")
+#install.packages("ggordiplots")
+#install.packages("RcmdrMisc")
+#install.packages("adespatial")
+#install.packages("ggVennDiagram")
+#install.packages("ggpicrust2")
+```
+
+## 1.3 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the Fish_Functions_19.07.24_Paper.Rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+source_rmd("Fish_Functions_19.07.24_Paper.Rmd")
+```
+
+
+
+## 1.4 Input Files
+
+```{r, message=FALSE, warning=FALSE}
+#Sequencing was performed in 3 runs and 2 batches, Batch1 was sequenced twice to increase sequencing depth
+#all runs were individually processed in the Dada2 pipeline and merged at the seqtab step
+#########################
+#Read DADA2 Output files#
+
+taxa  <-readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergemerge-Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergeseqtab.nochim.rds"))
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch2-26.07.23_470_Track_reads_through_pipeline.csv"))
+
+########################################################################
+#Import samplefile and filter for samples with successful 16S sequencing
+library(readxl)
+SAMDF16S<- as.data.frame(read_excel(file.path(path_Input_16S, "Fish_samplefile_24.03.2024.xlsx")))[,-1]
+write.table(SAMDF16S, file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+
+SAMDF16S <-read.table(file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+rownames(SAMDF16S) <- SAMDF16S$SampleID
+
+```
+
+
+## 1.5 Tutorials
+
+```{r, message=FALSE, warning=FALSE,  include=FALSE}
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+
+## 1.6 Setup Analysis
+
+```{r, message=FALSE, warning=FALSE}
+#Date of the Analysis for save-names#
+Date <- "19.07.2024"
+set.seed(123)
+Species    <- "OE_GC"
+Kind       <- "Fish"
+Tissue     <- "Gill"
+Year       <- "2021_2022"
+Season     <- "SU_AU_WI_SP"
+Type       <- "16S"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+#Differential Abundance Testing
+OutlineColor <- "grey20"
+
+#####################
+variable = Comparisons = "Replicates2"
+#####################
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand", "Twielenfleth","Muehlenberger Loch")
+SeasonOrder <-c("Summer_21", "Autumn_21", "Winter_22", "Spring_22")
+CruiseOrder<-c("Elbe_Summer_21", "Elbe_Autumn_21", "Elbe_Winter_22","Elbe_Spring_22")
+
+VariableOrder<-c(
+  "GCSU21BB", "GCSU21SS", "GCSU21TW", "GCSU21ML", 
+  "GCAU21BB", "GCAU21SS", "GCAU21TW", "GCAU21ML", 
+  "GCWI22BB", "GCWI22SS",             "GCWI22ML", 
+  "GCSP22BB", "GCSP22SS", "GCSP22TW", "GCSP22ML", 
+  
+  "OESU21MG", "OESU21BB", "OESU21SS", "OESU21TW", "OESU21ML", 
+  "OEAU21MG", "OEAU21BB", "OEAU21SS", "OEAU21TW", "OEAU21ML",
+  "OEWI22MG", "OEWI22BB", "OEWI22SS", "OEWI22TW", "OEWI22ML",
+  "OESP22MG", "OESP22BB", "OESP22SS", "OESP22TW", "OESP22ML",
+  
+  "WF")
+
+
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand","Twielenfleth", "Muehlenberger Loch")
+LOCOrder=c("MG-713", "BB-692", "SS-665","TF-651", "ML-633")
+save_name <- paste(Species,Year,Season,sep = "_")
+#Check your Output: 
+paste0(file.path(path_Output_16S, "DAT_"), save_name, ".RData")
+
+SAMDF16S$LOC<-ifelse(SAMDF16S$Loc == "Medem Grund", "MG-713",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "BB-692",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "SS-665",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "TF-651",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "ML-633", NA)))))
+
+SAMDF16S$"geographic.location..latitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "53.8363",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "53.8874",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "53.71442",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "53.60921",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "53.54907", NA)))))
+SAMDF16S$"geographic.location..longitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "8.88777",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "9.19429",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "9.46976",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "9.56536",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "9.82338", NA)))))
+
+SAMDF16S$Reps <- sub("^.{2}", "", SAMDF16S$Replicates2)
+SAMDF16S$Reps<- ifelse(SAMDF16S$Reps == "SU21MG", "SU 713",
+                            ifelse(SAMDF16S$Reps == "SU21BB", "SU 692",
+                            ifelse(SAMDF16S$Reps == "SU21SS", "SU 665",
+                            ifelse(SAMDF16S$Reps == "SU21TW", "SU 651",
+                            ifelse(SAMDF16S$Reps == "SU21ML", "SU 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "AU21MG", "AU 713",
+                            ifelse(SAMDF16S$Reps == "AU21BB", "AU 692",
+                            ifelse(SAMDF16S$Reps == "AU21SS", "AU 665",
+                            ifelse(SAMDF16S$Reps == "AU21TW", "AU 651",
+                            ifelse(SAMDF16S$Reps == "AU21ML", "AU 633", 
+                            
+                            ifelse(SAMDF16S$Reps == "WI22MG", "WI 713",
+                            ifelse(SAMDF16S$Reps == "WI22BB", "WI 692",
+                            ifelse(SAMDF16S$Reps == "WI22SS", "WI 665",
+                            ifelse(SAMDF16S$Reps == "WI22TW", "WI 651",
+                            ifelse(SAMDF16S$Reps == "WI22ML", "WI 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "SP22MG", "SP 713",
+                            ifelse(SAMDF16S$Reps == "SP22BB", "SP 692",
+                            ifelse(SAMDF16S$Reps == "SP22SS", "SP 665",
+                            ifelse(SAMDF16S$Reps == "SP22TW", "SP 651",
+                            ifelse(SAMDF16S$Reps == "SP22ML", "SP 633", 
+                                   "WF")))))
+                            )))))))))))))))
+
+     RepOrder <-c(
+    "SU 713", "SU 692","SU 665","SU 651","SU 633", 
+    "AU 713","AU 692","AU 665","AU 651","AU 633", 
+    "WI 713","WI 692","WI 665","WI 651","WI 633", 
+    "SP 713","SP 692","SP 665","SP 651","SP 633")
+     
+
+SAMDF16S$RepsSpecs <- paste(SAMDF16S$Species, SAMDF16S$Reps, sep=" ")
+SAMDF16S$RepsSpecs[SAMDF16S$RepsSpecs == "WF"] <- "WF"
+
+SAMDF16S$HSI     <- SAMDF16S$LiverWeight/SAMDF16S$Weight*100
+SAMDF16S$SSI     <- SAMDF16S$SpleenWeight/SAMDF16S$Weight*100
+SAMDF16S$GSI     <- SAMDF16S$GonadWeight/SAMDF16S$Weight*100
+SAMDF16S$FCF <-  (100*SAMDF16S$Weight/(SAMDF16S$Length/10)^3)
+SAMDF16S$FI  <- SAMDF16S$StomachContent/SAMDF16S$Weight*100
+ 
+SAMDF16S <- SAMDF16S %>% mutate(Maturity = case_when(
+                    (Species== "GC" & Length >= 10.5) ~ "Adult", 
+                    (Species== "GC" & Length < 10.5) ~ "Juvenile", 
+                    (Species== "OE" & Length >= 10) ~ "Adult", Length < 10 ~ "Juvenile"))
+
+SAMDF16S <- SAMDF16S %>% 
+  mutate(Age = case_when(
+    Species != "OE" ~ as.character(Age),  
+    (Species == "OE" & Length < 90) ~ "0", 
+    (Species == "OE" & Length <= 130) ~ "1", 
+    (Species == "OE" & Length <= 180) ~ "2", 
+    (Species == "OE" & Length <= 220) ~ "3", 
+    (Species == "OE" & Length > 220) ~ "4"
+  ))
+SAMDF16S$Age <- as.numeric(SAMDF16S$Age)
+
+SAMDF16S$fSeason <- factor(SAMDF16S$Season, level = SeasonOrder)
+SAMDF16S$fLOC <- factor(SAMDF16S$LOC, level = LOCOrder)
+SAMDF16S$Species <- substr(SAMDF16S$SampleID, 1, nchar(SAMDF16S$SampleID) - 9)
+SAMDF16S$fReplicates <- factor(SAMDF16S$Replicates, levels = VariableOrder[VariableOrder %in%                                                                               SAMDF16S$Replicates])
+
+SAMDF16S$fCruise <- factor(SAMDF16S$Cruise, level = CruiseOrder)
+
+#Adding in Elbe Estuary Public Monitoring Data from https://www.fgg-elbe.de/fachinformationssystem.html
+Mean_AbioticsFGG <- readRDS(file.path(path_Input_16S, "Mean_AbioticsFGG_16.02.24.rds"))
+names(Mean_AbioticsFGG)[names(Mean_AbioticsFGG) == "Season"] <- "Cruise"
+names(SAMDF16S)[names(SAMDF16S) == "O2"] <- "O2_catch"
+names(SAMDF16S)[names(SAMDF16S) == "O2Sat"] <- "O2Sat_catch"
+names(SAMDF16S)[names(SAMDF16S) == "pH"] <- "pH_catch"
+
+colnames(Mean_AbioticsFGG) <- sub("_mean", "",colnames(Mean_AbioticsFGG))
+SAMDF16S <- dplyr::left_join(SAMDF16S, Mean_AbioticsFGG)
+
+SSU_Samples <-c(
+#Ruffe
+#Summer21
+"GCSU21BBEB1", "GCSU21BBEB2", "GCSU21BBEB4", "GCSU21BBEB5",                              "GCSU21BBFL3",
+"GCSU21SSEB1", "GCSU21SSEB2", "GCSU21SSEB3", "GCSU21SSEB4", "GCSU21SSEB8","GCSU21SSFL1", "GCSU21SSFL3",
+"GCSU21TWEB1", "GCSU21TWEB2", "GCSU21TWEB3", "GCSU21TWEB4", "GCSU21TWFL1", "GCSU21TWFL2", "GCSU21TWFL3",
+"GCSU21MLEB1", "GCSU21MLEB2", "GCSU21MLEB3", "GCSU21MLEB5", "GCSU21MLEB6", "GCSU21MLFL1", "GCSU21MLFL2", "GCSU21MLFL3", "GCSU21MLFL6",
+
+#"GCSU21BBEB6" missing physiology
+#"GCSU21BBFL2" equal to water samples 
+
+#Autumn21
+"GCAU21BBEB1", "GCAU21BBEB2", "GCAU21BBEB3", "GCAU21BBFL1", "GCAU21BBFL2", "GCAU21BBFL3", "GCAU21BBFL4",
+"GCAU21SSEB1", "GCAU21SSEB3", "GCAU21SSEB5", "GCAU21SSEB7", "GCAU21SSFL1", "GCAU21SSFL3", "GCAU21SSFL5",
+"GCAU21TWEB1", "GCAU21TWFL1", "GCAU21TWFL2",
+"GCAU21MLEB1", "GCAU21MLEB2", "GCAU21MLEB3", "GCAU21MLFL1", "GCAU21MLFL3", "GCAU21MLFL5", "GCAU21MLFL7", 
+#Winter21
+"GCWI22BBEB1", "GCWI22BBFL1", "GCWI22BBFL2",
+"GCWI22SSEB1", "GCWI22SSEB2", "GCWI22SSEB3", "GCWI22SSFL1", "GCWI22SSFL2", 
+"GCWI22MLEB1", "GCWI22MLFL1", "GCWI22MLFL2",
+#Spring21
+"GCSP22BBEB1", "GCSP22BBEB3", "GCSP22BBEB5", "GCSP22BBEB7", "GCSP22BBEB9", "GCSP22BBFL1", "GCSP22BBFL2",
+"GCSP22SSEB1", "GCSP22SSEB3", "GCSP22SSEB5", "GCSP22SSEB7", "GCSP22SSFL1", "GCSP22SSFL3", "GCSP22SSFL5",
+"GCSP22TWEB1", "GCSP22TWFL1", "GCSP22TWFL2", "GCSP22TWFL3",   
+"GCSP22MLEB1", "GCSP22MLEB3", "GCSP22MLEB5", "GCSP22MLEB7", "GCSP22MLFL1", "GCSP22MLFL3", "GCSP22MLFL5",
+#Summer22 ML
+#"GCSU22MLEB1", "GCSU22MLEB2", "GCSU22MLEB3", "GCSU22MLEB4", "GCSU22MLEB5", "GCSU22MLEB6", "GCSU22MLEB7",  
+
+#Smelt
+"OESU21MGEB1", "OESU21MGEB4", "OESU21MGEB6", "OESU21MGEB8", "OESU21MGEB9", "OESU21MGFL2", "OESU21MGFL6",
+"OESU21BBEB5", "OESU21BBEB6", "OESU21BBEB7", "OESU21BBEB8", "OESU21BBEB9", "OESU21BBFL1", "OESU21BBFL4",
+"OESU21SSEB6", "OESU21SSEB7", "OESU21SSEB8", "OESU21SSEB9", "OESU21SSFL1", "OESU21SSFL2", "OESU21SSFL6",
+"OESU21TWEB2", "OESU21TWEB3", "OESU21TWEB4", "OESU21TWFL1", "OESU21TWFL3", "OESU21TWFL5", "OESU21TWFL7",
+"OESU21MLEB1", "OESU21MLEB2", "OESU21MLEB3", "OESU21MLFL1", "OESU21MLFL2",
+
+"OEAU21MGEB1", "OEAU21MGEB3", "OEAU21MGEB5", "OEAU21MGEB7", "OEAU21MGFL1", "OEAU21MGFL3", "OEAU21MGFL5",
+"OEAU21BBEB1", "OEAU21BBEB3", "OEAU21BBEB6", "OEAU21BBEB7", "OEAU21BBFL2", "OEAU21BBFL4", "OEAU21BBFL6",
+"OEAU21SSEB1", "OEAU21SSEB3", "OEAU21SSEB5", "OEAU21SSEB8", "OEAU21SSFL1", "OEAU21SSFL3", "OEAU21SSFL6",
+"OEAU21TWEB1", "OEAU21TWEB3", "OEAU21TWEB5", "OEAU21TWEB7", "OEAU21TWFL1", "OEAU21TWFL3", "OEAU21TWFL7",
+"OEAU21MLEB1", "OEAU21MLEB3", "OEAU21MLEB5", "OEAU21MLEB7", "OEAU21MLFL1", "OEAU21MLFL3", "OEAU21MLFL7",
+
+"OEWI22BBEB1", "OEWI22BBEB4", "OEWI22BBEB5", "OEWI22BBEB7", "OEWI22BBFL1", "OEWI22BBFL3", "OEWI22BBFL7", 
+"OEWI22MGEB1", "OEWI22MGEB3", "OEWI22MGEB5", "OEWI22MGEB9", "OEWI22MGFL1", "OEWI22MGFL3", "OEWI22MGFL7",
+"OEWI22SSEB1", "OEWI22SSEB5", "OEWI22SSEB7", "OEWI22SSEB9", "OEWI22SSFL1", "OEWI22SSFL5", "OEWI22SSFL8",  
+"OEWI22TWEB1", "OEWI22TWEB2", "OEWI22TWEB3", "OEWI22TWEB4", "OEWI22TWEB5", "OEWI22TWEB7", "OEWI22TWEB9",
+"OEWI22MLEB1", "OEWI22MLEB3", "OEWI22MLEB7", "OEWI22MLEB9", "OEWI22MLFL1", "OEWI22MLFL5", "OEWI22MLFL7", 
+
+"OESP22MGEB1", "OESP22MGEB3", "OESP22MGEB5", "OESP22MGEB7", "OESP22MGFL1", "OESP22MGFL3", "OESP22MGFL5",
+"OESP22BBEB1", "OESP22BBEB3", "OESP22BBEB7", "OESP22BBEB8", "OESP22BBFL2", "OESP22BBFL3", "OESP22BBFL5",
+"OESP22SSEB1", "OESP22SSEB2", "OESP22SSEB3", "OESP22SSEB4", "OESP22SSFL1", "OESP22SSFL3", "OESP22SSFL5",
+"OESP22TWEB1", "OESP22TWEB2", "OESP22TWEB5", "OESP22TWFL1", "OESP22TWFL3", "OESP22TWFL5", "OESP22TWFL7",
+"OESP22MLEB1", "OESP22MLEB2", "OESP22MLEB3", "OESP22MLFL1", "OESP22MLFL2", "OESP22MLFL3", "OESP22MLFL4",
+
+#"OESU22MLEB1", "OESU22MLEB2", "OESU22MLEB3", "OESU22MLEB4", 
+
+"WFSU21MGEB",
+"WFSU21BBEB",
+"WFSU21SSFL",
+"WFSU21MLFL", 
+
+"WFAU21TWEB",
+
+"WFWI22MGEB", "WFWI22MGFL",
+"WFWI22BBEB", "WFWI22BBFL",
+"WFWI22MLFL", "WFWI22SSFL", 
+
+"WFSP22MGEB", "WFSP22MGFL",
+"WFSP22BBEB", "WFSP22BBFL", 
+"WFSP22SSEB", "WFSP22SSFL",
+"WFSP22MLEB", "WFSP22MLFL"
+
+#"WFSU22MLEB"
+)
+      
+SAMDF16S$Species[SAMDF16S$Species == "W"] <- "WF"
+SAMDF16S$fSpecies <- factor(SAMDF16S$Species, levels=c("WF", "OE", "GC"))
+
+
+###########################################################################################################
+#For ENA_Sample Submission! Open in Numbers or Libre office, stupid Excel will destroy geo and other data!#
+###########################################################################################################
+  write.table(SAMDF16S, paste0(file.path(path_Output_16S, paste(paste(save_name,
+            paste("SAMDF16S", sep=""),sep="_"),".txt", sep=""))), dec = ".", sep = "\t")
+```
+
+
+#-
+
+# 2 Phyloseq
+
+hand over from dada2 to phyloseq to store data
+
+```{r, message=FALSE, warning=FALSE}
+#Create a phyloseq object from Dada2 Output
+library(tidyverse)
+taxa  <-readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergemerge-Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergeseqtab.nochim.rds"))
+
+taxa<-as.matrix(taxa)
+library(phyloseq)
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), tax_table(taxa))
+
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch2-26.07.23_470_Track_reads_through_pipeline.csv"))
+
+ReadNum <- rbind(ReadNum1, ReadNum2, ReadNum3)
+ReadNum<-ReadNum[,c("X", "input")]
+colnames(ReadNum)<-c("SampleID", "Input")
+ReadNum <- ReadNum %>%
+  dplyr::group_by(SampleID) %>%
+  dplyr::summarise(Input = sum(Input))
+
+nonchim <- as.data.frame(rowSums(otu_table(ps)))
+names(nonchim) <- "nonchim"
+ReadNum<- dplyr::left_join(rownames_to_column(nonchim), ReadNum, by=c("rowname" = "SampleID"))
+colnames(ReadNum)<-c("SampleID", "nonchim", "Input")
+rownames(ReadNum) <- ReadNum$SampleID
+
+OTU <- otu_table(ps)
+TAX <- tax_table(ps) 
+REFSEQ <- refseq(ps)
+
+ps <- phyloseq(otu_table(OTU, taxa_are_rows=FALSE), 
+               sample_data(ReadNum), tax_table(TAX), refseq(REFSEQ))
+
+head(sample_names(ps))
+head(rowSums(otu_table(ps)))
+sample_names(ps)[sample_names(ps) == "Elbe915"] <- "WFSU21MGEB"
+sample_names(ps)[sample_names(ps) == "Elbe917"] <- "WFSU21BBEB"
+sample_names(ps)[sample_names(ps) == "WFAUT21TWEB"] <- "WFAU21TWEB"
+
+head(rowSums(otu_table(ps)))
+
+
+###########
+#Save Data#
+###########
+ps <- prune_samples(sample_names(ps) %in% SSU_Samples, ps)
+ps <- microViz::ps_reorder(ps, SSU_Samples)
+
+saveRDS(ps, file.path(path_Output_16S, paste(paste("Fish_ps_16S_merge", Date, sep="_"), "rds", sep=".")))
+ps <- readRDS(file.path(path_Output_16S, paste(paste("Fish_ps_16S_merge", Date, sep="_"), "rds", sep=".")))
+
+```
+
+# 3 Filter ASVs 
+
+Filtering ASVs for 0.005% relative abundance per dataset excluding rare taxa reducing risks of spurious correlations in the later analyses 
+
+
+```{r, message=FALSE, warning=FALSE}
+#https://github.com/joey711/phyloseq/issues/574
+require(phyloseq)
+require(dada2)
+require(tidyverse)
+head(as.data.frame(rowSums(otu_table(ps))))
+
+pslistraw <- list("ps" = ps)
+for (i in names(pslistraw)[grepl("ps", names(pslistraw))]){
+    ps <- pslistraw[[i]]
+    g <- names(pslistraw[i])
+    A = data.frame(sample_data(ps))
+    A<-A %>% mutate(Run =case_when(
+    A$SampleID %in% c(ReadNum2$X) ~ "Batch1_Run1merge",
+    A$SampleID %in% c(ReadNum3$X) ~ "Batch2"))
+    #PHY <-phy_tree(ps)
+    OTU <- otu_table(ps, taxa_are_rows=FALSE)
+    TAX <- tax_table(ps)
+    REFSEQ <- refseq(ps)
+    pslistraw[[i]] <- phyloseq(otu_table(OTU, taxa_are_rows=FALSE), 
+               sample_data(A), tax_table(TAX), refseq(REFSEQ)) #, phy_tree(PHY)
+}
+
+####################################################################
+#Creat differently splitted datasets to answer individual questions#
+ps_SSU <-prune_samples(sample_names(pslistraw$ps)[grepl("GC|OE|WF", sample_names(pslistraw$ps))], pslistraw$ps)
+ps_WF <-prune_samples(sample_names(pslistraw$ps)[grepl("WFSU|WFAU|WFSP|WFWI", sample_names(pslistraw$ps))], pslistraw$ps)
+ps_Fish <-prune_samples(sample_names(pslistraw$ps)[grepl("GC|OE", sample_names(pslistraw$ps))], pslistraw$ps)
+ps_OE <-prune_samples(sample_names(ps_Fish)[grepl("OE", sample_names(ps_Fish))], ps_Fish)
+ps_GC <-prune_samples(sample_names(ps_Fish)[grepl("GC", sample_names(ps_Fish))], ps_Fish)
+
+ps_OEWF <-prune_samples(sample_names(ps_SSU)[grepl("WFSU|WFAU|WFSP|WFWI|OE", sample_names(ps_SSU))], ps_SSU)
+ps_GCWF <-prune_samples(sample_names(ps_SSU)[grepl("WFSU|WFAU|WFSP|WFWI|GC", sample_names(ps_SSU))], ps_SSU)
+
+pslistraw<- list("ps_SSU" = ps_SSU, "ps_WF" = ps_WF, "ps_Fish" = ps_Fish, "ps_OE" = ps_OE, "ps_GC" = ps_GC, "ps_OEWF" = ps_OEWF, "ps_GCWF" =ps_GCWF)
+
+###########
+#Save Data#
+###########
+saveRDS(pslistraw, file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+#########################
+#Adding real sample data#
+#########################
+for (i in names(pslistraw)[grepl("ps", names(pslistraw))]){
+    ps_SAMDF <- pslistraw[[i]]
+    g<- i; print(g)
+
+    A<-SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps_SAMDF)),]
+    B <-dplyr::left_join(A, sample_data(ps_SAMDF))
+    rownames(B) <- B$SampleID
+    B <-phyloseq::sample_data(B)
+
+    #PHY <-phy_tree(ps)
+    OTU <- phyloseq::otu_table(ps_SAMDF, taxa_are_rows=FALSE)
+    TAX <- phyloseq::tax_table(ps_SAMDF)
+    REFSEQ <- refseq(ps_SAMDF)
+    pslistraw[[i]] <- phyloseq(OTU, TAX, B, REFSEQ) #, phy_tree(PHY)
+}
+
+##############################################################################
+#Filtering threshold determined to reduce sparsity but keep overall abundance#
+applied_filter <- 0.005
+print(paste("The Filtering Abundance is", applied_filter, "%"))
+ 
+for (i in names(pslistraw)[grepl("ps", names(pslistraw))]) {
+    require(cowplot)
+    require(phyloseq)
+    require(ggplot2)
+    tryCatch({
+    ps <- pslistraw[[i]]
+    g<- names(pslistraw[i])
+    ###### Pre-Filtering Step 1: Remove all not bacteria
+    table(tax_table(ps)[, "Phylum"], exclude = NULL)
+    ps_Filter <- ps %>%
+    prune_taxa(taxa_sums(.) > 0, .) # prune OTUs that are not present in at least one sample
+    ps_Filter1 <- ps_Filter %>% #Filter everything that is not bacteria
+    subset_taxa(
+    Kingdom == "Bacteria" &
+    Family  != "mitochondria" &
+    Class   != "Chloroplast")
+
+    if (g %in% c("ps_SSU")) {
+      A<-as.data.frame(rowSums(otu_table(ps)))
+      B<-as.data.frame(rowSums(otu_table(ps_Filter1)))
+      BB <- (B - A)/A*100
+      print("We loose reads by Chloroplast & Mitochondria removal")
+      print(BB)
+    }
+ 
+    ###### Pre-Filtering Step 2: Remove all uncharacterized
+    ps_Filter2 <- subset_taxa(ps_Filter1, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+    
+    #table(tax_table(ps_Filter2)[, "Phylum"], exclude = NULL)
+
+    ###### Pre-Filtering Step 3: Glom to species level
+    #ps_Filter_glom = tax_glom(ps_Filter2, "Species", NArm = FALSE) 
+    #head(tax_table(ps_Filter_glom))
+    #following http://mixomics.org/mixmc/mixmc-preprocessing/
+    #Arumugam et al., (2011)
+
+    
+    low.count.removal <- function(
+                        data, # OTU count df of size n (sample) x p (OTU)
+                        percent=0.005 # cutoff chosen
+                        ) {
+    keep.otu = which(colSums(data)*100/(sum(colSums(data))) > percent)
+    data.filter = data[,keep.otu]
+    return(list(data.filter = data.filter, keep.otu = keep.otu))}
+
+    #######################################################
+    #Plot consequence of filtering from Strand et al, 2021#
+    #######################################################
+    frac_zero <- c()
+    all_sum   <- c()
+    num_otu   <- c()
+    seqp <- seq(0,0.1,0.0001)
+    for(i in seqp){
+      result.filter = low.count.removal(otu_table(ps_Filter2), percent=i)
+      length(result.filter$keep.otu)
+      otu.f = result.filter$data.filter
+      frac_zero <- c(frac_zero, sum(otu.f == 00)/ (ncol(otu.f)*nrow(otu.f)))
+      all_sum <- c(all_sum, sum(otu.f))
+      num_otu <- c(num_otu, ncol(otu.f))
+    }
+    names(frac_zero) <- seqp
+    names(all_sum) <- seqp
+
+    # Get all_sum and num_otu to a fraction of the total
+    mas <- max(all_sum)
+    mno <- max(num_otu)
+
+    all_sum %>% (function(x){x/max(x)}) -> all_sum
+    num_otu %>% (function(x){x/max(x)}) -> num_otu
+    data.frame(filter = seqp, 
+           Percent.zeros   = frac_zero*100, 
+           Total.abundance = all_sum*100, 
+           Number.of.OTUs  = num_otu*100) %>% 
+    tidyr::gather(key = "Type", value = "percent.of.total", -filter) %>%
+    ggplot() + 
+    geom_line(mapping = aes(x = filter, y = percent.of.total, col = Type)) +
+    geom_vline(xintercept = applied_filter, alpha = 0.5, color = "red", linetype="dashed")+
+    ylab("Percent of total") +
+    xlab(paste("Filter at", applied_filter)) +
+    theme(legend.title = element_blank()) -> FilterZerosPlot
+
+    plot(FilterZerosPlot)
+    
+    ggsave(FilterZerosPlot, filename = paste(paste(save_name,"FilterZerosPlot", i, sep="_"), 
+                                           ".png", sep=""), 
+             path = pathPlots , device='png', dpi=300, width = 7, height = 5)
+      
+    ########################
+    # remove low count OTUs#
+    ########################
+    result.filter <- low.count.removal(otu_table(ps_Filter2), percent=applied_filter) 
+    data.filter <- result.filter$data.filter
+    length(result.filter$keep.otu) # check how many OTUs remain
+
+    ps_Filter3 <- prune_taxa(names(result.filter$keep.otu), ps_Filter2)
+
+    #tail(t(otu_table(ps_Filter3)))
+    #table(rowSums(t(otu_table(ps_Filter3))))
+
+    ###### Pre-Filtering Step 4: Add best taxonomy to ASV
+    ps_Filter_ASV_besttax<- add_besthit(ps_Filter3, sep=":")
+
+    ###### Excluding samples with low sequencing depth
+    #Check sample depths
+    #print(sample_sums(ps_Filter))
+    #print(sample_sums(ps_Filter_ASV_besttax))
+
+    ###### Pre-Filtering Step 5: Remove low frequency Samples
+    print(paste("Samples removed for low frequency below 1000 seqs in;", g, sep = ""))
+    print(which(!rowSums(otu_table(ps_Filter_ASV_besttax)) > 1000))
+
+    
+    head(rowSums(otu_table(ps_Filter_ASV_besttax)))
+    library(phyloseq)
+    ps_Filter_ASV_besttax_Samples <- prune_samples(rowSums(otu_table(ps_Filter_ASV_besttax)) > 1000,
+                                                            ps_Filter_ASV_besttax) 
+    
+    ps_Filter_ASV_besttax_Samples <- ps_Filter_ASV_besttax_Samples %>% prune_taxa(taxa_sums(.) > 0, .) 
+    #ps_Filter_ASV_besttax_Samples <- filter_taxa(ps_Filter_ASV_besttax_Samples, function (x) {sum(x > 0) > 1},
+    #                                 prune=TRUE) 
+    saveRDS(ps_Filter_ASV_besttax_Samples, file.path(path_Output_16S,paste(g, paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+  
+#####################################################
+#Creating a dynamic list object that we loop through#
+ps_SSU      <- readRDS(file.path(path_Output_16S, paste("ps_SSU", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_WF      <- readRDS(file.path(path_Output_16S, paste("ps_WF", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_Fish   <- readRDS(file.path(path_Output_16S, paste("ps_Fish", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_OE <- readRDS(file.path(path_Output_16S, paste("ps_OE", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_GC <- readRDS(file.path(path_Output_16S, paste("ps_GC", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_GCWF <- readRDS(file.path(path_Output_16S, paste("ps_GCWF", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_OEWF <- readRDS(file.path(path_Output_16S, paste("ps_OEWF", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+
+pslist<- list("ps_SSU" = ps_SSU, "ps_WF" = ps_WF, "ps_Fish" = ps_Fish, "ps_OE" = ps_OE, "ps_GC" = ps_GC, "ps_OEWF" = ps_OEWF, "ps_GCWF" =ps_GCWF)
+
+for (i in names(pslist)[grepl("ps", names(pslist))]){
+  g <- paste(i)
+  a <- length(pslist)
+  ps <- pslist[[i]]
+  ps_clr <- microbiome::transform(ps, "clr")
+  pslist[[a+1]] <- ps_clr
+  names(pslist)[[a+1]] <- paste("clr", sub("ps", "\\1", g), sep="")}
+
+for (i in names(pslist)[grepl("clr", names(pslist))]){
+  g <- paste(i)
+  a <- length(pslist)
+  clr <- pslist[[i]]
+  TSE<-mia::makeTreeSummarizedExperimentFromPhyloseq(clr)
+  pslist[[a+1]] <- TSE
+  names(pslist)[[a+1]] <- paste("TSEc.l.r", sub("clr", "\\1", g), sep="")}
+```
+
+#-
+
+# Save Data
+
+```{r, message=FALSE, warning=FALSE}
+###########
+#Save Data#
+###########
+saveRDS(pslist, file.path(path_Output_16S, paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+```
+
+#-
+
+# 13 Abiotics 
+
+Visualization of abiotic measurements taken during the cruises or gathered from continuous monitoring in the Elbe estuary
+
+## 13.1 Abiotics
+
+```{r, message=FALSE, warning=FALSE, fig.width=10, fig.height=10}
+
+AbioticsFGG <- readRDS(file.path(path_Input_16S, "AbioticsFGG_16.02.24.rds"))
+Mean_AbioticsFGG <- readRDS(file.path(path_Input_16S, "Mean_AbioticsFGG_16.02.24.rds"))
+
+Abiotics_plot_list <- list()
+Variables <-  c(
+      "Salinity", "Temperature", "O2",
+        "NH4",  "NO2", "NO3", 
+        "PO4", "pH", "SPM", "TOC")
+for (ii in Variables) {
+      
+      
+      FILENAME    <- paste(paste(save_name, "Abiotics", ii, "Area_plot", sep="_"),".png", sep="")
+    
+      ggg     <- paste(ii) 
+
+        
+      p <- SAMDF16S %>%
+        filter(!duplicated(paste(Season, LOC))) %>%
+        ggplot(aes(x= fLOC, y=.data[[ii]])) + 
+        geom_area(position = "identity", alpha = 0.2, size =1 , 
+                  aes(colour = fSeason, group=fSeason, fill =fSeason)) + 
+      scale_fill_manual(values = col.Palette$col.Palette.Season) +
+      scale_color_manual(values = col.Palette$col.Palette.Season) + 
+      theme(legend.position = "none") +
+      theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         #panel.grid.major = element_blank(),
+         #panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent') ) 
+      
+       if (ii %in% c("PO4", "pH", "SPM", "TOC")) {
+          p <- p + theme(axis.text.x = element_text(angle = 90, size=15,face = "bold"),
+          axis.title.x.bottom = element_blank(),
+          axis.title.y.left = element_text(size=15,face = "bold"),
+          strip.text.x = element_text(face = "bold"),
+          strip.text.x.bottom = element_text(size = 15,face = "bold"),
+          strip.text.y.left = element_text(size = 15,face = "bold"),
+          axis.text.x.bottom = element_text(face = "bold", angle = 45, hjust = 1),
+          axis.text.y.left = element_text(size = 15, face = "bold"),
+          legend.title = element_text( size = 9),
+          legend.text = element_text(size = 9,face = "bold"),
+          axis.title.x=element_blank(),
+          plot.subtitle = element_text(size = 9),
+          plot.caption = element_text(size = 9))
+       } else {
+          p <- p + theme(axis.text.x = element_text(angle = 90, size=15,face = "bold"),
+          axis.title.x.bottom = element_blank(),
+          axis.title.y.left = element_text(size=15,face = "bold"),
+          strip.text.x = element_text(face = "bold"),
+          strip.text.x.bottom = element_text(size = 15,face = "bold"),
+          strip.text.y.left = element_text(size = 15,face = "bold"),
+          axis.text.x.bottom = element_blank(),
+          axis.text.y.left = element_text(size = 15, face = "bold"),
+          legend.title = element_text( size = 9),
+          legend.text = element_text(size = 9,face = "bold"),
+          axis.title.x=element_blank(),
+          axis.ticks.x =element_blank(),
+          plot.subtitle = element_text(size = 9),
+          plot.caption = element_text(size = 9))
+      }
+      p <- p + labs(y = noquote(paste(ii, " [", noquote(Units[ii]), "]", sep = ""))) 
+
+      Abiotics_plot<- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+
+      #Abiotics_plot <- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.05, 0.98)) #title, 
+      
+      #plot(Abiotics_plot)
+      ggsave(Abiotics_plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 4,
+      height = 4)
+      Abiotics_plot_list[[ii]] <- Abiotics_plot
+  }
+
+  ##############
+  #Summary Plot#
+  ##############
+  PLOTS1 <- Abiotics_plot_list[!grepl("pH" , names(Abiotics_plot_list))]
+  cowplot::plot_grid(cowplot::plot_grid(plotlist = PLOTS1, ncol = 3)) -> part_2_a #, labels = "auto"
+
+  ggsave(part_2_a, filename = paste(paste("Abiotics_Facet",
+          sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,height = 6)
+  
+  plot(part_2_a)
+
+```
+
+
+
+
+## 13.1 Timeseries Abiotics
+
+```{r, message=FALSE, warning=FALSE, fig.width=10, fig.height=12}
+### 1.1.6  Visualize Timeseries
+library(cowplot)
+ElbeAbiotics <- readRDS(file.path(path_Input_16S, "ElbeAbioticsDaily10.04.23.rds")) 
+
+
+ElbeAbiotics$LOC<-ifelse(ElbeAbiotics$Loc == "Medem Grund", "MG-713",
+                      ifelse(ElbeAbiotics$Loc == "Brunsbuettel", "BB-692",
+                          ifelse(ElbeAbiotics$Loc == "Schwarztonnen Sand", "SS-665",
+                                  ifelse(ElbeAbiotics$Loc == "Twielenfleth", "TF-651",
+                                        ifelse(ElbeAbiotics$Loc == "Muehlenberger Loch", "ML-633", NA)))))
+ElbeAbiotics$fLOC <- factor(ElbeAbiotics$LOC, levels=rev(LOCOrder))
+
+
+ElbeAbiotics_filtered <- ElbeAbiotics %>%
+  filter(Day >= "2021-05-01" & Day <= "2022-11-01")
+
+
+# Create plots for each abiotic variable
+colors_O2 <- c("red", "pink", "lightblue", "#3333FF", "#3333FF", "#3333FF")
+breaks_O2 <- c(0,2,5, 7, 10, 14)
+plot_O2 <- ggplot(ElbeAbiotics_filtered, aes(x = Day, y = fLOC, fill = O2)) +
+  geom_tile() +
+  scale_fill_gradientn(breaks = breaks_O2, colours = colors_O2) +
+  theme_minimal() +
+  labs(x = "", y = "") +
+  scale_x_date(breaks = "month", date_labels = "%b-%Y") +
+  ggtitle("Oxygen levels [mg/L]") +
+   theme(
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.x = element_text(face = "bold"),
+        strip.text.x.bottom = element_text(size = 10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.y.left = element_text(face = "bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10,face = "bold"),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9), 
+        axis.title.x = element_blank(),  # Remove x-axis title
+        axis.text.x = element_blank()) 
+
+colors_Temperature  <- c("blue","lightblue",  "red")
+breaks_Temperature  <- c(0, 5, 15, 20, 25)
+plot_Temperature <- ggplot(ElbeAbiotics_filtered, aes(x = Day, y = fLOC, fill = Temperature)) +
+  geom_tile() +
+  scale_fill_gradientn(breaks = breaks_Temperature, colours = colors_Temperature) +
+  theme_minimal() + 
+  labs(x = "", y = "") +
+  scale_x_date(breaks = "month", date_labels = "%b-%Y") +
+  ggtitle("Temperature [C°]") +
+   theme(
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.x = element_text(face = "bold"),
+        strip.text.x.bottom = element_text(size = 10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.y.left = element_text(face = "bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10,face = "bold"),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9), 
+        axis.title.x = element_blank(),  # Remove x-axis title
+        axis.text.x = element_blank()) 
+
+
+colors_Salinity  <- c("lightblue", "gold2", "gold")
+breaks_Salinity  <- c(0, 0.5, 5, 20)
+plot_Salinity <- ggplot(ElbeAbiotics_filtered, aes(x = Day, y = fLOC, fill = Salinity)) +
+  geom_tile() +
+  scale_fill_gradientn(breaks = breaks_Salinity , colours = colors_Salinity ) +
+  theme_minimal() + 
+  labs(x = "", y = "") +
+  ggtitle("Salinity levels [psu]") +
+  labs(x = NULL, y = NULL) +  # Remove x-axis label
+  scale_x_date(breaks = "month", date_labels = "%b-%Y") +
+  theme(
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.x = element_text(face = "bold"),
+        strip.text.x.bottom = element_text(size = 10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.y.left = element_text(face = "bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10,face = "bold"),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9), 
+        axis.title.x = element_blank(),  # Remove x-axis title
+        axis.text.x = element_blank()) 
+
+colors_Turbidity  <- c("#FFFFFF", "#ac6721", "#663300")
+breaks_Turbidity   <- c(0, 10, 50, 300)
+plot_Turbidity <- ggplot(ElbeAbiotics_filtered, aes(x = Day, y = fLOC, fill = Turbidity)) +
+  geom_tile() +
+  scale_fill_gradientn(breaks = breaks_Turbidity  , colours = colors_Turbidity ) +
+  theme_minimal() + 
+  ggtitle("Turbidity levels [NTU]") +
+  labs(x = NULL, y = NULL) +  # Remove x-axis label
+  scale_x_date(breaks = "month", date_labels = "%b-%Y") +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.title.x.bottom = element_text(size=10,face = "bold"),
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.x = element_text(face = "bold"),
+        strip.text.x.bottom = element_text(size = 10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.x.bottom = element_text(face = "bold", angle = 45, hjust = 1),
+        axis.text.y.left = element_text(face = "bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10,face = "bold"),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9))
+
+
+
+combined_plot <- plot_grid(plot_O2, plot_Temperature, plot_Salinity,plot_Turbidity,
+                             labels = c("", ""), rel_heights = c(0.23, 0.23, 0.23, 0.28), ncol = 1, align = "v")
+#combined_plot <- plot_grid(plot_O2, plot_Temperature, plot_Salinity,
+#                             labels = c("", ""), rel_heights = c(0.28, 0.28, 0.32), ncol = 1, align = "v")
+  plot(combined_plot)
+  ggsave(combined_plot, filename = paste(paste(save_name,"ElbeAbioticsDaily", sep="_"), 
+                                           ".png", sep=""), 
+             path = pathPlots , device='png', dpi=300, width = 7, height = 5)
+
+```
+
+#-
+
+# 14 Stable Isotopes
+
+## 14.1 OE carbon 
+
+```{r, message=FALSE, warning=FALSE, fig.width=6, fig.height=8}
+library(readxl)
+SIA <- as.data.frame(read_excel(file.path(path_Input_16S, "OE_SIA_19.06.2024.xlsx")))[,-1]
+SIA[SIA$Stat == "TF",]$Stat <- paste("TW")
+SIA[SIA$Stat == "STS",]$Stat <- paste("SS")
+SIA$Number <- as.numeric(str_extract(SIA$Code, "\\d{1,2}$"))
+
+#Rename Samples
+SIA <- SIA %>%
+  mutate(SampleID = paste0(
+    "OE",
+    case_when(
+      Season == "Spring" ~ "SP",
+      Season == "Summer" ~ "SU",
+      Season == "Autumn" ~ "AU",
+      Season == "Winter" ~ "WI",
+      TRUE ~ NA_character_  # Fallback in case of unexpected season value
+    ),
+    substr(Year, 3, 4),  # Extract last two digits of the year
+    paste(SIA$Stat),
+    case_when(
+      Tide == "Ebb" ~ "EB",
+      Tide == "Flood" ~ "FL",
+      TRUE ~ NA_character_  # Fallback in case of unexpected tide value
+    ),
+    SIA$Number # Extract last character of the Code column
+  ))
+
+
+SIA <- SIA[SIA$SampleID %in% SAMDF16S$SampleID, ]
+SIA <- SAMDF16S %>%
+  left_join(SIA[c("SampleID", "Code", "TL_cm", "Weight_g", "Group", "Class", "Strategy", "%C","%N","C/N","d15N","d13C")])
+SIA_OE <- SIA[SIA$Species == "OE",]
+SIA_OE$d13C <- as.numeric(SIA_OE$d13C)
+
+
+
+  Datasetname <- "OE"
+  FILENAME    <- paste(paste(save_name, "SIA_BarPlot", Datasetname, sep="_"), ".png", sep="")      
+    
+  COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%   
+                                        unique(SIA_OE$Reps)]
+      
+   SIA_OE$Reps <-  factor( SIA_OE$Reps, levels = RepOrder[RepOrder %in%  SIA_OE$Reps])
+
+      Short.labs <- gsub("[^0-9]", "", SIA_OE$Reps)
+      names(Short.labs) <- SIA_OE$Reps
+      
+      
+      p <- ggplot(SIA_OE, aes(x = SampleID, y = d13C, color = d13C, fill = d13C)) + 
+          geom_point(size = 5) +  # Increase point size
+           ylim(- 27, -13) +
+          #geom_bar(stat = "identity") +
+          #geom_area(fill = "lightblue", alpha = 0.5) +
+          coord_flip() +
+          facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_y", switch = "y", 
+             labeller = labeller(Reps = Short.labs)) +
+            scale_color_gradientn(colors = c("#F8766D", "#9E9E9E", "steelblue")) 
+
+      p <- p + 
+        ylab(expression(paste(delta^{13}, "C (\u2030)"))) + xlab("") + 
+        labs(fill="") + #atheme+
+        #scale_fill_manual(values = color_mapping) +
+        #ylim(0, 80) +
+            theme(axis.title.y=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks.y=element_blank()) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13", size=15, face ="bold"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 15, face = "bold", angle = 45, hjust = 1),
+        #strip.text.y.left = element_text(size = 9,face = "bold"), 
+        #axis.title.y.left = element_text(size=12,face = "bold")
+        ) +
+        theme(legend.position = "none")
+      p <- p +
+        geom_hline(yintercept= - 25.6,linetype=1) +
+        geom_hline(yintercept= - 26.5,linetype=2) +
+        geom_hline(yintercept= - 20.2,linetype=1) +
+        geom_hline(yintercept= - 19.6,linetype=2)
+
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-l', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    SIA_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    SIA_BarPlot <- plot_grid(SIA_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(SIA_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 2.7, height = 10)
+    
+    plot(SIA_BarPlot)
+```
+
+## 14.2 GC carbon
+
+```{r, message=FALSE, warning=FALSE, fig.width=6, fig.height=8}
+
+library(readxl)
+SIA <- as.data.frame(read_excel(file.path(path_Input_16S, "GC_SIA_19.06.2024.xlsx")))[,-1]
+SIA[SIA$Stat == "TF",]$Stat <- paste("TW")
+SIA[SIA$Stat == "STS",]$Stat <- paste("SS")
+SIA$Number <- as.numeric(str_extract(SIA$Code2, "\\d{1,2}$"))
+
+#Rename Samples
+SIA <- SIA %>%
+  mutate(SampleID = paste0(
+    "GC",
+    case_when(
+      Season == "Spring" ~ "SP",
+      Season == "Summer" ~ "SU",
+      Season == "Autumn" ~ "AU",
+      Season == "Winter" ~ "WI",
+      TRUE ~ NA_character_  # Fallback in case of unexpected season value
+    ),
+    substr(Year, 3, 4),  # Extract last two digits of the year
+    paste(SIA$Stat),
+    case_when(
+      Tide == "Ebb" ~ "EB",
+      Tide == "Flood" ~ "FL",
+      TRUE ~ NA_character_  # Fallback in case of unexpected tide value
+    ),
+    SIA$Number # Extract last character of the Code column
+  ))
+
+
+SIA <- SIA[SIA$SampleID %in% SAMDF16S$SampleID, ]
+SIA <- SAMDF16S %>%
+  left_join(SIA[c("SampleID", "Code", "TL_cm", "Weight_g", "Group", "Class", "Strategy", "%C","%N","C/N","d15N","d13C")])
+SIA_GC <- SIA[SIA$Species == "GC",]
+SIA_GC$d13C <- as.numeric(SIA_GC$d13C)
+
+
+
+  Datasetname <- "GC"
+  FILENAME    <- paste(paste(save_name, "SIA_BarPlot", Datasetname, sep="_"), ".png", sep="")      
+    
+  COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%   
+                                        unique(SIA_GC$Reps)]
+      
+   SIA_GC$Reps <-  factor( SIA_GC$Reps, levels = RepOrder[RepOrder %in%  SIA_GC$Reps])
+
+      Short.labs <- gsub("[^0-9]", "", SIA_GC$Reps)
+      names(Short.labs) <- SIA_GC$Reps
+      
+      
+      p <- ggplot(SIA_GC, aes(x = SampleID, y = d13C, color = d13C, fill = d13C)) + 
+          geom_point(size = 5) +  # Increase point size
+           ylim(- 27, -13) +
+          #geom_bar(stat = "identity") +
+          #geom_area(fill = "lightblue", alpha = 0.5) +
+          coord_flip() +
+          facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_y", switch = "y", 
+             labeller = labeller(Reps = Short.labs)) +
+            scale_color_gradientn(colors = c("#F8766D", "#9E9E9E")) 
+
+      p <- p + 
+        ylab(expression(paste(delta^{13}, "C (\u2030)"))) + xlab("") + 
+        labs(fill="") + #atheme+
+        #scale_fill_manual(values = color_mapping) +
+        #ylim(0, 80) +
+            theme(axis.title.y=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks.y=element_blank()) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13", size=15, face ="bold"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 15, face = "bold", angle = 45, hjust = 1),
+        #strip.text.y.left = element_text(size = 9,face = "bold"), 
+        #axis.title.y.left = element_text(size=12,face = "bold")
+        ) +
+        theme(legend.position = "none")
+      p <- p +
+        geom_hline(yintercept= - 25.6,linetype=1) +
+        geom_hline(yintercept= - 26.5,linetype=2) +
+        geom_hline(yintercept= - 20.2,linetype=1) +
+        geom_hline(yintercept= - 19.6,linetype=2)
+
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-l', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    SIA_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    SIA_BarPlot <- plot_grid(SIA_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(SIA_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 2.7, height = 10)
+    
+    plot(SIA_BarPlot)
+    
+```
+
+

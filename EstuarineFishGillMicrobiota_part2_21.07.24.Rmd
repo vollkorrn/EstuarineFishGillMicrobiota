@@ -1,0 +1,2655 @@
+---
+title: "EstuarineFishGillMicrobiota_part2_21.07.24"
+output: html_document
+date: "2024-07-21"
+---
+
+here we perform some overall alpha diversity analyses inspecting species richness and diversity as well as determining the fish gill mucus core microbiota via prevalence and abundance. 
+Spatio-temporal of bacterioplankton and fish is found in chapter 4.5 depicting especially the interesting microbiota adapation in migrating fish. 
+First steps of data exploration for modeling alpha diversity are shown in 5. however seem to transfer low information. 
+
+
+# 1 Global Setup 
+
+## 1.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+GitClonePath <- "/Users/admin/Desktop/EstuarineFishGillMicrobiota"
+setwd(GitClonePath)
+
+path_Input_16S <- paste(GitClonePath, "Fish_Input_16S", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "Fish_Output_16S", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "Fish_Plots", sep="/")
+
+#Create Folder if not existing
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Output_16S")), dir.create(file.path(GitClonePath, "Fish_Output_16S")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Plots")), dir.create(file.path(GitClonePath, "Fish_Plots")), FALSE)
+
+```
+
+## 1.2 Packages
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::snapshot()
+#packrat::restore()
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "ComplexHeatmap",
+#   "Biostrings",
+#   "BiocParallel",
+#   "BiocNeighbors",
+#   "BiocFileCache",
+#   "BiocBaseUtils",
+#   "ShortRead",
+#   "SummarizedExperiment",
+#   "TreeSummarizedExperiment",
+#   "phyloseq",
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   ), force =T)
+
+#install.packages("remotes")
+#remotes::install_github("jfq3/ggordiplots")
+#install.packages("devtools")
+#install.packages("ggordiplots")
+#install.packages("RcmdrMisc")
+#install.packages("adespatial")
+#install.packages("ggVennDiagram")
+#install.packages("ggpicrust2")
+```
+
+## 1.3 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the Fish_Functions_19.07.24_Paper.Rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+source_rmd("Fish_Functions_19.07.24_Paper.Rmd")
+```
+
+
+
+## 1.4 Input Files
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Sequencing was performed in 3 runs and 2 batches, Batch1 was sequenced twice to increase sequencing depth
+#all runs were individually processed in the Dada2 pipeline and merged at the seqtab step
+#########################
+#Read DADA2 Output files#
+
+taxa  <-readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergemerge-Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergeseqtab.nochim.rds"))
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch2-26.07.23_470_Track_reads_through_pipeline.csv"))
+
+########################################################################
+#Import samplefile and filter for samples with successful 16S sequencing
+library(readxl)
+SAMDF16S<- as.data.frame(read_excel(file.path(path_Input_16S, "Fish_samplefile_24.03.2024.xlsx")))[,-1]
+write.table(SAMDF16S, file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+
+SAMDF16S <-read.table(file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+rownames(SAMDF16S) <- SAMDF16S$SampleID
+
+```
+
+
+## 1.5 Tutorials
+
+```{r, message=FALSE, warning=FALSE,  include=FALSE}
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+
+## 1.6 Setup Analysis
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Date of the Analysis for save-names#
+Date <- "19.07.2024"
+set.seed(123)
+Species    <- "OE_GC"
+Kind       <- "Fish"
+Tissue     <- "Gill"
+Year       <- "2021_2022"
+Season     <- "SU_AU_WI_SP"
+Type       <- "16S"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+#Differential Abundance Testing
+OutlineColor <- "grey20"
+
+#####################
+variable = Comparisons = "Replicates2"
+#####################
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand", "Twielenfleth","Muehlenberger Loch")
+SeasonOrder <-c("Summer_21", "Autumn_21", "Winter_22", "Spring_22")
+CruiseOrder<-c("Elbe_Summer_21", "Elbe_Autumn_21", "Elbe_Winter_22","Elbe_Spring_22")
+
+VariableOrder<-c(
+  "GCSU21BB", "GCSU21SS", "GCSU21TW", "GCSU21ML", 
+  "GCAU21BB", "GCAU21SS", "GCAU21TW", "GCAU21ML", 
+  "GCWI22BB", "GCWI22SS",             "GCWI22ML", 
+  "GCSP22BB", "GCSP22SS", "GCSP22TW", "GCSP22ML", 
+  
+  "OESU21MG", "OESU21BB", "OESU21SS", "OESU21TW", "OESU21ML", 
+  "OEAU21MG", "OEAU21BB", "OEAU21SS", "OEAU21TW", "OEAU21ML",
+  "OEWI22MG", "OEWI22BB", "OEWI22SS", "OEWI22TW", "OEWI22ML",
+  "OESP22MG", "OESP22BB", "OESP22SS", "OESP22TW", "OESP22ML",
+  
+  "WF")
+
+
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand","Twielenfleth", "Muehlenberger Loch")
+LOCOrder=c("MG-713", "BB-692", "SS-665","TF-651", "ML-633")
+save_name <- paste(Species,Year,Season,sep = "_")
+#Check your Output: 
+paste0(file.path(path_Output_16S, "DAT_"), save_name, ".RData")
+
+SAMDF16S$LOC<-ifelse(SAMDF16S$Loc == "Medem Grund", "MG-713",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "BB-692",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "SS-665",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "TF-651",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "ML-633", NA)))))
+
+SAMDF16S$"geographic.location..latitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "53.8363",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "53.8874",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "53.71442",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "53.60921",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "53.54907", NA)))))
+SAMDF16S$"geographic.location..longitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "8.88777",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "9.19429",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "9.46976",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "9.56536",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "9.82338", NA)))))
+
+SAMDF16S$Reps <- sub("^.{2}", "", SAMDF16S$Replicates2)
+SAMDF16S$Reps<- ifelse(SAMDF16S$Reps == "SU21MG", "SU 713",
+                            ifelse(SAMDF16S$Reps == "SU21BB", "SU 692",
+                            ifelse(SAMDF16S$Reps == "SU21SS", "SU 665",
+                            ifelse(SAMDF16S$Reps == "SU21TW", "SU 651",
+                            ifelse(SAMDF16S$Reps == "SU21ML", "SU 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "AU21MG", "AU 713",
+                            ifelse(SAMDF16S$Reps == "AU21BB", "AU 692",
+                            ifelse(SAMDF16S$Reps == "AU21SS", "AU 665",
+                            ifelse(SAMDF16S$Reps == "AU21TW", "AU 651",
+                            ifelse(SAMDF16S$Reps == "AU21ML", "AU 633", 
+                            
+                            ifelse(SAMDF16S$Reps == "WI22MG", "WI 713",
+                            ifelse(SAMDF16S$Reps == "WI22BB", "WI 692",
+                            ifelse(SAMDF16S$Reps == "WI22SS", "WI 665",
+                            ifelse(SAMDF16S$Reps == "WI22TW", "WI 651",
+                            ifelse(SAMDF16S$Reps == "WI22ML", "WI 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "SP22MG", "SP 713",
+                            ifelse(SAMDF16S$Reps == "SP22BB", "SP 692",
+                            ifelse(SAMDF16S$Reps == "SP22SS", "SP 665",
+                            ifelse(SAMDF16S$Reps == "SP22TW", "SP 651",
+                            ifelse(SAMDF16S$Reps == "SP22ML", "SP 633", 
+                                   "WF")))))
+                            )))))))))))))))
+
+     RepOrder <-c(
+    "SU 713", "SU 692","SU 665","SU 651","SU 633", 
+    "AU 713","AU 692","AU 665","AU 651","AU 633", 
+    "WI 713","WI 692","WI 665","WI 651","WI 633", 
+    "SP 713","SP 692","SP 665","SP 651","SP 633")
+     
+
+SAMDF16S$RepsSpecs <- paste(SAMDF16S$Species, SAMDF16S$Reps, sep=" ")
+SAMDF16S$RepsSpecs[SAMDF16S$RepsSpecs == "WF"] <- "WF"
+
+SAMDF16S$HSI     <- SAMDF16S$LiverWeight/SAMDF16S$Weight*100
+SAMDF16S$SSI     <- SAMDF16S$SpleenWeight/SAMDF16S$Weight*100
+SAMDF16S$GSI     <- SAMDF16S$GonadWeight/SAMDF16S$Weight*100
+SAMDF16S$FCF <-  (100*SAMDF16S$Weight/(SAMDF16S$Length/10)^3)
+SAMDF16S$FI  <- SAMDF16S$StomachContent/SAMDF16S$Weight*100
+ 
+SAMDF16S <- SAMDF16S %>% mutate(Maturity = case_when(
+                    (Species== "GC" & Length >= 10.5) ~ "Adult", 
+                    (Species== "GC" & Length < 10.5) ~ "Juvenile", 
+                    (Species== "OE" & Length >= 10) ~ "Adult", Length < 10 ~ "Juvenile"))
+
+SAMDF16S <- SAMDF16S %>% 
+  mutate(Age = case_when(
+    Species != "OE" ~ as.character(Age),  
+    (Species == "OE" & Length < 90) ~ "0", 
+    (Species == "OE" & Length <= 130) ~ "1", 
+    (Species == "OE" & Length <= 180) ~ "2", 
+    (Species == "OE" & Length <= 220) ~ "3", 
+    (Species == "OE" & Length > 220) ~ "4"
+  ))
+SAMDF16S$Age <- as.numeric(SAMDF16S$Age)
+
+SAMDF16S$fSeason <- factor(SAMDF16S$Season, level = SeasonOrder)
+SAMDF16S$fLOC <- factor(SAMDF16S$LOC, level = LOCOrder)
+SAMDF16S$Species <- substr(SAMDF16S$SampleID, 1, nchar(SAMDF16S$SampleID) - 9)
+SAMDF16S$fReplicates <- factor(SAMDF16S$Replicates, levels = VariableOrder[VariableOrder %in%                                                                               SAMDF16S$Replicates])
+
+SAMDF16S$fCruise <- factor(SAMDF16S$Cruise, level = CruiseOrder)
+
+#Adding in Elbe Estuary Public Monitoring Data from https://www.fgg-elbe.de/fachinformationssystem.html
+Mean_AbioticsFGG <- readRDS(file.path(path_Input_16S, "Mean_AbioticsFGG_16.02.24.rds"))
+names(Mean_AbioticsFGG)[names(Mean_AbioticsFGG) == "Season"] <- "Cruise"
+names(SAMDF16S)[names(SAMDF16S) == "O2"] <- "O2_catch"
+names(SAMDF16S)[names(SAMDF16S) == "O2Sat"] <- "O2Sat_catch"
+names(SAMDF16S)[names(SAMDF16S) == "pH"] <- "pH_catch"
+
+colnames(Mean_AbioticsFGG) <- sub("_mean", "",colnames(Mean_AbioticsFGG))
+SAMDF16S <- dplyr::left_join(SAMDF16S, Mean_AbioticsFGG)
+
+SSU_Samples <-c(
+#Ruffe
+#Summer21
+"GCSU21BBEB1", "GCSU21BBEB2", "GCSU21BBEB4", "GCSU21BBEB5",                              "GCSU21BBFL3",
+"GCSU21SSEB1", "GCSU21SSEB2", "GCSU21SSEB3", "GCSU21SSEB4", "GCSU21SSEB8","GCSU21SSFL1", "GCSU21SSFL3",
+"GCSU21TWEB1", "GCSU21TWEB2", "GCSU21TWEB3", "GCSU21TWEB4", "GCSU21TWFL1", "GCSU21TWFL2", "GCSU21TWFL3",
+"GCSU21MLEB1", "GCSU21MLEB2", "GCSU21MLEB3", "GCSU21MLEB5", "GCSU21MLEB6", "GCSU21MLFL1", "GCSU21MLFL2", "GCSU21MLFL3", "GCSU21MLFL6",
+
+#"GCSU21BBEB6" missing physiology
+#"GCSU21BBFL2" equal to water samples 
+
+#Autumn21
+"GCAU21BBEB1", "GCAU21BBEB2", "GCAU21BBEB3", "GCAU21BBFL1", "GCAU21BBFL2", "GCAU21BBFL3", "GCAU21BBFL4",
+"GCAU21SSEB1", "GCAU21SSEB3", "GCAU21SSEB5", "GCAU21SSEB7", "GCAU21SSFL1", "GCAU21SSFL3", "GCAU21SSFL5",
+"GCAU21TWEB1", "GCAU21TWFL1", "GCAU21TWFL2",
+"GCAU21MLEB1", "GCAU21MLEB2", "GCAU21MLEB3", "GCAU21MLFL1", "GCAU21MLFL3", "GCAU21MLFL5", "GCAU21MLFL7", 
+#Winter21
+"GCWI22BBEB1", "GCWI22BBFL1", "GCWI22BBFL2",
+"GCWI22SSEB1", "GCWI22SSEB2", "GCWI22SSEB3", "GCWI22SSFL1", "GCWI22SSFL2", 
+"GCWI22MLEB1", "GCWI22MLFL1", "GCWI22MLFL2",
+#Spring21
+"GCSP22BBEB1", "GCSP22BBEB3", "GCSP22BBEB5", "GCSP22BBEB7", "GCSP22BBEB9", "GCSP22BBFL1", "GCSP22BBFL2",
+"GCSP22SSEB1", "GCSP22SSEB3", "GCSP22SSEB5", "GCSP22SSEB7", "GCSP22SSFL1", "GCSP22SSFL3", "GCSP22SSFL5",
+"GCSP22TWEB1", "GCSP22TWFL1", "GCSP22TWFL2", "GCSP22TWFL3",   
+"GCSP22MLEB1", "GCSP22MLEB3", "GCSP22MLEB5", "GCSP22MLEB7", "GCSP22MLFL1", "GCSP22MLFL3", "GCSP22MLFL5",
+#Summer22 ML
+#"GCSU22MLEB1", "GCSU22MLEB2", "GCSU22MLEB3", "GCSU22MLEB4", "GCSU22MLEB5", "GCSU22MLEB6", "GCSU22MLEB7",  
+
+#Smelt
+"OESU21MGEB1", "OESU21MGEB4", "OESU21MGEB6", "OESU21MGEB8", "OESU21MGEB9", "OESU21MGFL2", "OESU21MGFL6",
+"OESU21BBEB5", "OESU21BBEB6", "OESU21BBEB7", "OESU21BBEB8", "OESU21BBEB9", "OESU21BBFL1", "OESU21BBFL4",
+"OESU21SSEB6", "OESU21SSEB7", "OESU21SSEB8", "OESU21SSEB9", "OESU21SSFL1", "OESU21SSFL2", "OESU21SSFL6",
+"OESU21TWEB2", "OESU21TWEB3", "OESU21TWEB4", "OESU21TWFL1", "OESU21TWFL3", "OESU21TWFL5", "OESU21TWFL7",
+"OESU21MLEB1", "OESU21MLEB2", "OESU21MLEB3", "OESU21MLFL1", "OESU21MLFL2",
+
+"OEAU21MGEB1", "OEAU21MGEB3", "OEAU21MGEB5", "OEAU21MGEB7", "OEAU21MGFL1", "OEAU21MGFL3", "OEAU21MGFL5",
+"OEAU21BBEB1", "OEAU21BBEB3", "OEAU21BBEB6", "OEAU21BBEB7", "OEAU21BBFL2", "OEAU21BBFL4", "OEAU21BBFL6",
+"OEAU21SSEB1", "OEAU21SSEB3", "OEAU21SSEB5", "OEAU21SSEB8", "OEAU21SSFL1", "OEAU21SSFL3", "OEAU21SSFL6",
+"OEAU21TWEB1", "OEAU21TWEB3", "OEAU21TWEB5", "OEAU21TWEB7", "OEAU21TWFL1", "OEAU21TWFL3", "OEAU21TWFL7",
+"OEAU21MLEB1", "OEAU21MLEB3", "OEAU21MLEB5", "OEAU21MLEB7", "OEAU21MLFL1", "OEAU21MLFL3", "OEAU21MLFL7",
+
+"OEWI22BBEB1", "OEWI22BBEB4", "OEWI22BBEB5", "OEWI22BBEB7", "OEWI22BBFL1", "OEWI22BBFL3", "OEWI22BBFL7", 
+"OEWI22MGEB1", "OEWI22MGEB3", "OEWI22MGEB5", "OEWI22MGEB9", "OEWI22MGFL1", "OEWI22MGFL3", "OEWI22MGFL7",
+"OEWI22SSEB1", "OEWI22SSEB5", "OEWI22SSEB7", "OEWI22SSEB9", "OEWI22SSFL1", "OEWI22SSFL5", "OEWI22SSFL8",  
+"OEWI22TWEB1", "OEWI22TWEB2", "OEWI22TWEB3", "OEWI22TWEB4", "OEWI22TWEB5", "OEWI22TWEB7", "OEWI22TWEB9",
+"OEWI22MLEB1", "OEWI22MLEB3", "OEWI22MLEB7", "OEWI22MLEB9", "OEWI22MLFL1", "OEWI22MLFL5", "OEWI22MLFL7", 
+
+"OESP22MGEB1", "OESP22MGEB3", "OESP22MGEB5", "OESP22MGEB7", "OESP22MGFL1", "OESP22MGFL3", "OESP22MGFL5",
+"OESP22BBEB1", "OESP22BBEB3", "OESP22BBEB7", "OESP22BBEB8", "OESP22BBFL2", "OESP22BBFL3", "OESP22BBFL5",
+"OESP22SSEB1", "OESP22SSEB2", "OESP22SSEB3", "OESP22SSEB4", "OESP22SSFL1", "OESP22SSFL3", "OESP22SSFL5",
+"OESP22TWEB1", "OESP22TWEB2", "OESP22TWEB5", "OESP22TWFL1", "OESP22TWFL3", "OESP22TWFL5", "OESP22TWFL7",
+"OESP22MLEB1", "OESP22MLEB2", "OESP22MLEB3", "OESP22MLFL1", "OESP22MLFL2", "OESP22MLFL3", "OESP22MLFL4",
+
+#"OESU22MLEB1", "OESU22MLEB2", "OESU22MLEB3", "OESU22MLEB4", 
+
+"WFSU21MGEB",
+"WFSU21BBEB",
+"WFSU21SSFL",
+"WFSU21MLFL", 
+
+"WFAU21TWEB",
+
+"WFWI22MGEB", "WFWI22MGFL",
+"WFWI22BBEB", "WFWI22BBFL",
+"WFWI22MLFL", "WFWI22SSFL", 
+
+"WFSP22MGEB", "WFSP22MGFL",
+"WFSP22BBEB", "WFSP22BBFL", 
+"WFSP22SSEB", "WFSP22SSFL",
+"WFSP22MLEB", "WFSP22MLFL"
+
+#"WFSU22MLEB"
+)
+      
+SAMDF16S$Species[SAMDF16S$Species == "W"] <- "WF"
+SAMDF16S$fSpecies <- factor(SAMDF16S$Species, levels=c("WF", "OE", "GC"))
+
+
+###########################################################################################################
+#For ENA_Sample Submission! Open in Numbers or Libre office, stupid Excel will destroy geo and other data!#
+###########################################################################################################
+  write.table(SAMDF16S, paste0(file.path(path_Output_16S, paste(paste(save_name,
+            paste("SAMDF16S", sep=""),sep="_"),".txt", sep=""))), dec = ".", sep = "\t")
+
+pslistraw <- readRDS(file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+pslist <- readRDS(file.path(path_Output_16S,paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+```
+
+#-
+
+# 4 Alpha Overview
+
+## 4.1 Observed Diversity Plots
+
+simple richness plot over all samples 
+
+```{r, message=FALSE, warning=FALSE, fig.width=20, fig.height=10}
+##########################
+#Observed Diversity Plots#
+##########################
+for (i in names(pslist)[grepl("ps", names(pslist))]){
+  require(plyr); require(ggrepel); require(cowplot); require(phyloseq)
+  #if (OperatingSystem == "Mac" ) {quartz() }
+  tryCatch({
+  g       <- paste(i); print(i) 
+  #gg      <- sub('ps', '', g)
+  A<- plot_richness(pslist[[i]], x = "SampleID", measures = c("Observed")) + # Shannon
+  geom_bar(aes(fill = sample_data(pslist[[i]])$Species), stat = "identity", position = "stack") + #fill = Phylum
+  scale_x_discrete(limits = SSU_Samples[SSU_Samples %in% sample_names(pslist[[i]])]) +
+  #scale_x_discrete(breaks=factor(sample_data(pslist[[i]])$Replicates, levels=SLOrder)) +
+  scale_fill_manual(values = col.Palette$col.Palette.Species) +
+  theme(axis.text.x.bottom = element_text(size=rel(0.8),angle = 45, vjust = 1, hjust = 1), 
+        legend.title = element_text( size = 6),
+        legend.text = element_text(size = 6),
+        legend.key.size = unit(0.4, 'cm'),)+
+  labs(x = element_blank(), y = "Alpha Diversity Measure (non normalized)")
+  title <- ggdraw() + draw_label_themeRK(paste(g), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRK(paste("Paired End 16S",sep = " "), element = "plot.subtitle",
+                                            x = 0.05, hjust = 0,   
+  vjust = 1)
+  prow <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  A<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0.04, 0.05, 0.98))
+  plot(A)
+  ggsave(A, filename = paste(paste(save_name, Type, paste(g, "Observed-AlphaDiversity", sep="_"), Date, sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8,
+  height = 8)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+
+
+
+```
+
+## 4.2 Species Accumulation
+
+Visualizing of diversity is covered in raw and filtered datasets 
+
+```{r, message=FALSE, warning=FALSE}
+for (Dataset in names(pslistraw)) {
+  require(vegan)
+  spacc_raw_ps <- pslistraw[[Dataset]]
+  spacc_ps     <- pslist[[Dataset]]
+
+  Datasetname <- sub("ps_", "", Dataset)
+  
+  spacc_raw <- vegan::specaccum(otu_table(spacc_raw_ps), method = "random", permutations = 100)
+  spacc     <- vegan::specaccum(otu_table(spacc_ps), method = "random", permutations = 100)
+
+
+  #creating a dataframe for ggplot2
+  data_spacc_raw <- data.frame(Specimen=spacc_raw$sites, Richness=spacc_raw$richness, SD=spacc_raw$sd)
+  A<- ggplot() +
+    geom_point(data=data_spacc_raw, aes(x=Specimen, y=Richness)) +
+    geom_line(data=data_spacc_raw, aes(x=Specimen, y=Richness)) +
+    geom_ribbon(data=data_spacc_raw ,aes(x=Specimen, ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2) +
+      atheme +
+      theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=10), 
+        legend.text=element_text(size=10)) +
+    theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))  +
+  ggtitle(paste(Datasetname, "raw"))
+  
+  Species_Accumulation_raw <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  
+
+  data_spacc <- data.frame(Specimen=spacc$sites, Richness=spacc$richness, SD=spacc$sd)
+  B<- ggplot() +
+    geom_point(data=data_spacc, aes(x=Specimen, y=Richness)) +
+    geom_line(data=data_spacc, aes(x=Specimen, y=Richness)) +
+    geom_ribbon(data=data_spacc,aes(x=Specimen, ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2) +
+      atheme +
+      theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=10), 
+        legend.text=element_text(size=10)) +
+    theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50")) +
+  ggtitle(paste(Datasetname, "abundance filtered"))
+
+Species_Accumulation_Filtered <- cowplot::plot_grid(B, labels = c(""), ncol = 1)
+
+require(vegan)
+cowplot::plot_grid(Species_Accumulation_raw, Species_Accumulation_Filtered, labels = c("A", "B"), ncol = 1) -> part_1
+ggsave(part_1, filename = paste(paste(save_name, Type, "SpeciesAccumulation", Datasetname, Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 6,height = 9)
+plot(part_1)
+
+}
+
+```
+
+## 4.3 Alpha Diversity Barplot 
+
+simple plotting of the taxa with highest abundance over time and space
+clue here are the preserved and automatically picked colors between taxa 
+
+```{r, message=FALSE, warning=FALSE, fig.width=20, fig.height=6}
+##########################
+#Barplot  with color code#
+##########################
+
+#Run once to determine color for both fish species
+TaxLevel <- "Genus"
+for (Dataset in names(pslist)[grepl("ps_Fish", names(pslist))]){
+  require(plyr); require(dplyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    FILENAME    <- paste(paste(save_name, "Alpha_BarPlot_Publication", TaxLevel, Datasetname, sep="_"), ".png", sep="")
+    
+    WIDTH = 10 + length(sample_names(pslist[[Dataset]])) *0.12
+    
+      if (Datasetname %in% c("GC", "GCWF", "Fish")) {
+      pslist[[Dataset]] <- prune_samples(sample_names(pslist[[Dataset]])[!grepl("GCSU21BBEB6", sample_names(pslist[[Dataset]]))], pslist[[Dataset]]) 
+        } else {pslist[[Dataset]] <- pslist[[Dataset]]}
+    
+    
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- pslist[[Dataset]] %>%
+    tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+    Order <- SSU_Samples[SSU_Samples %in% sample_names(pslist[[Dataset ]])]
+    
+    
+    
+  
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    phylum_abundance <- ps_alpha_barplot %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+      ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+      ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+      ps_alpha_barplot$SampleID <- factor(ps_alpha_barplot$SampleID, levels = SSU_Samples)
+      
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,]
+    
+    ######################
+    #Define Phylum Colors#
+    ######################
+    phylum_colors <- c(
+          "Actinobacteriota"  = "red", 
+          "Cyanobacteria"     = "green", 
+          "Bacteroidota"      = "darkgreen",
+          "Proteobacteria1"    = "darkorange2", 
+          "Proteobacteria2"    = "#663300",
+          #"Patescibacteria"  = "pink", 
+          "Acidobacteriota "  = "#FF00CC",
+          "Planctomycetota"   = "purple", 
+          "Verrucomicrobiota" = "blue", 
+          "Chloroflexota"     = "cyan",
+          "Deinococcota"      = "#FFFF00",
+          "Gemmatimonadota"   = "#8F7C00",  
+          "Other" = "grey20")
+       generate_shades <- function(base_color, num_variations) {
+        color_ramp <- colorRampPalette(c(base_color, "white"))
+        # Generate a vector of colors
+        colors <- color_ramp(num_variations+1)
+        # Create a data frame with the colors
+        color_palette <- colors[1:(length(colors) - 1)]
+      return(color_palette)}
+
+    ##################################################
+    #Create Color Dataframe for Taxa from PhylaColors#
+    ##################################################
+    taxonomy_df <- df[c("Phylum", "Taxa")]
+    #taxonomy_df$ASV <- sub(".*:", "", taxonomy_df$OTU)
+    taxonomy_df <- taxonomy_df[!duplicated(taxonomy_df$Taxa),]
+    #############################################
+    #Order to ordered_levels from Total Abudance#
+    order_index <- match(ordered_levels, taxonomy_df$Taxa)
+    taxonomy_df <- taxonomy_df[order_index, ]
+    print(head(taxonomy_df[c("Phylum", "Taxa")]))
+    
+    taxonomy_df$Phylum2 <- ifelse(taxonomy_df$Phylum == "Proteobacteria",
+              paste0("Proteobacteria", ave(seq_along(taxonomy_df$Phylum), 
+              taxonomy_df$Phylum, FUN = function(x) ifelse(seq_along(x) %% 2 == 0, 2, 1))),
+                               taxonomy_df$Phylum)
+    
+    unique_phyla <- unique(taxonomy_df$Phylum2)
+      # Assign base colors to unique phyla
+      #phylum_colors <- setNames(base_colors[1:length(unique_phyla)], unique_phyla)
+      # Print the mapping of phyla to colors
+      phylum_cols<- as.data.frame(phylum_colors)
+      phylum_cols$Phyla <- rownames(phylum_cols)
+
+    colored_taxonomy <- data.frame(
+      Taxa = taxonomy_df$Taxa,
+      Phylum2 = taxonomy_df$Phylum2,
+      Color = character(length(taxonomy_df$Taxa)),  # Initialize an empty character vector
+      stringsAsFactors = FALSE)
+  
+  
+    # Generate shades and assign colors to each taxon
+    for (ii in seq_along(unique_phyla)) {
+      phylum <- unique_phyla[ii]
+      
+      if (phylum %in% names(phylum_colors)) {
+         base_color <- phylum_colors[[phylum]]
+        } else {
+        base_color <- phylum_colors[["Other"]]
+        }
+      taxon_indices <- taxonomy_df$Phylum2 == phylum
+      num_variations <- sum(taxon_indices)
+      shades <- generate_shades(base_color, pmin(num_variations, 5))
+      
+      #colored_taxonomy$Color[taxon_indices] <- shades 
+      colored_taxonomy$Color[which(taxon_indices)[1:pmin(num_variations, 5)]]<- shades
+    }
+    
+    colored_taxonomy$Color <- gsub("^$", NA, trimws(colored_taxonomy$Color))
+    colored_taxonomy$Color <- replace_na(colored_taxonomy$Color, "grey50")
+  
+    ##################
+    # #Some adjustments#
+   updateColor <- function(taxa, color) {
+      if (any(colored_taxonomy$Taxa == taxa)) {
+      colored_taxonomy[colored_taxonomy$Taxa == taxa,]$Color <- color
+      }
+      return(colored_taxonomy)
+      }
+
+    colored_taxonomy <- updateColor("Psychrobacter", "#FFCC00")
+    colored_taxonomy <- updateColor("Polynucleobacter", "#FF6600")
+
+    
+    #updateColor("Photobacterium", "darkorange3")
+    # updateColor("Vibrio", "#FF9966")
+    #updateColor("Citrobacter", "#FFCC00")
+    #updateColor("Psychrobacter", "#FFCC00")
+    # updateColor("Enterobacter", "#993300")
+    #updateColor("Acinetobacter", "#FF9933")
+
+    Alpha_Diversity_df <- left_join(df, colored_taxonomy)
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+
+ levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% ordered_levels[1:34]] <-
+      "Other"
+
+        
+ 
+        p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+        atheme2 +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+      
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      p
+      
+      
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in% RepOrder]
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = WIDTH, height = 6)
+}
+colored_taxonomy_Fish <- colored_taxonomy
+
+pslist[["Optics"]] <- list()
+pslist[["Optics"]][["colored_taxonomy_Fish"]] <- colored_taxonomy_Fish
+##############################
+#Now use color from both fish#
+##############################
+
+TaxLevel <- "Genus"
+for (Dataset in names(pslist)[grepl("ps_OE|ps_GC|ps_WF", names(pslist))]){
+  require(plyr); require(dplyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    FILENAME    <- paste(paste(save_name, "Alpha_BarPlot_Publication", TaxLevel, Datasetname, sep="_"), ".png", sep="")
+    
+    if (Datasetname %in% c("GC", "OE")) {
+      WIDTH <- 10 + length(sample_names(pslist[[Dataset]])) *0.12
+    } else if (Datasetname %in% c("WF")) {
+      WIDTH <-  5 + length(sample_names(pslist[[Dataset]])) *0.12
+    } else {
+     WIDTH <-  10 + length(sample_names(pslist[[Dataset]])) *0.12
+    }
+    
+    ps <- pslist[[Dataset]] 
+    
+    if (Datasetname %in% c("GC", "GCWF", "Fish")) {
+      ps <- prune_samples(sample_names(ps)[!grepl("GCSU21BBEB6", sample_names(ps))], ps) 
+    } else {ps <- ps}
+    
+      if (Datasetname %in% c("WF", "GCWF", "OEWF")) {
+      ps <- prune_samples(sample_names(ps)[!grepl("WFSU22MLEB", x =
+                            sample_names(ps ))], ps) 
+    } else {ps<-ps} #Missing physioligical data
+    
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- ps %>%
+    tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+  
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    phylum_abundance <- ps_alpha_barplot %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+      ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+      
+    ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+    ps_alpha_barplot$SampleID <- factor(ps_alpha_barplot$SampleID, levels = 
+                                          SSU_Samples[SSU_Samples %in% sample_names(pslist[[Dataset]])])
+  
+    
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,]
+  
+    ##################################################
+    #Create Color Dataframe for Taxa from PhylaColors#
+    ##################################################
+    taxonomy_df <- df[c("Phylum", "Taxa")]
+    #taxonomy_df$ASV <- sub(".*:", "", taxonomy_df$OTU)
+    taxonomy_df <- taxonomy_df[!duplicated(taxonomy_df$Taxa),]
+    #############################################
+    #Order to ordered_levels from Total Abudance#
+    order_index <- match(ordered_levels, taxonomy_df$Taxa)
+    taxonomy_df <- taxonomy_df[order_index, ]
+    print(head(taxonomy_df[c("Phylum", "Taxa")]))
+    
+    taxonomy_df$Phylum2 <- ifelse(taxonomy_df$Phylum == "Proteobacteria",
+              paste0("Proteobacteria", ave(seq_along(taxonomy_df$Phylum), 
+              taxonomy_df$Phylum, FUN = function(x) ifelse(seq_along(x) %% 2 == 0, 2, 1))),
+                               taxonomy_df$Phylum)
+    
+    unique_phyla <- unique(taxonomy_df$Phylum2)
+      # Assign base colors to unique phyla
+      #phylum_colors <- setNames(base_colors[1:length(unique_phyla)], unique_phyla)
+      # Print the mapping of phyla to colors
+      phylum_cols<- as.data.frame(phylum_colors)
+      phylum_cols$Phyla <- rownames(phylum_cols)
+
+    colored_taxonomy <- data.frame(
+      Taxa = taxonomy_df$Taxa,
+      Phylum2 = taxonomy_df$Phylum2,
+      Color = character(length(taxonomy_df$Taxa)),  # Initialize an empty character vector
+      stringsAsFactors = FALSE)
+  
+  
+    # Generate shades and assign colors to each taxon
+    for (ii in seq_along(unique_phyla)) {
+      phylum <- unique_phyla[ii]
+      
+      if (phylum %in% names(phylum_colors)) {
+         base_color <- phylum_colors[[phylum]]
+        } else {
+        base_color <- phylum_colors[["Other"]]
+        }
+      taxon_indices <- taxonomy_df$Phylum2 == phylum
+      num_variations <- sum(taxon_indices)
+      shades <- generate_shades(base_color, pmin(num_variations, 5))
+      
+      #colored_taxonomy$Color[taxon_indices] <- shades 
+      colored_taxonomy$Color[which(taxon_indices)[1:pmin(num_variations, 5)]]<- shades
+    }
+    
+    colored_taxonomy$Color <- gsub("^$", NA, trimws(colored_taxonomy$Color))
+    colored_taxonomy$Color <- replace_na(colored_taxonomy$Color, "grey50")
+  
+    ##################
+    # #Some adjustments#
+   updateColor <- function(taxa, color) {
+      if (any(colored_taxonomy$Taxa == taxa)) {
+      colored_taxonomy[colored_taxonomy$Taxa == taxa,]$Color <- color
+      }
+      return(colored_taxonomy)
+      }
+
+    colored_taxonomy <- updateColor("Psychrobacter", "#FFCC00")
+    colored_taxonomy <- updateColor("Polynucleobacter", "#FF6600")
+
+    
+    #updateColor("Photobacterium", "darkorange3")
+    # updateColor("Vibrio", "#FF9966")
+    #updateColor("Citrobacter", "#FFCC00")
+    #updateColor("Psychrobacter", "#FFCC00")
+    # updateColor("Enterobacter", "#993300")
+    #updateColor("Acinetobacter", "#FF9933")
+
+    Alpha_Diversity_df <- left_join(df, colored_taxonomy)
+
+    #################################
+    #Update to colored_taxonomy_Fish#
+    #################################
+    for (i in 1:nrow(Alpha_Diversity_df)) {
+          matching_row <- colored_taxonomy_Fish[colored_taxonomy_Fish$Taxa %in% Alpha_Diversity_df$Taxa[i], ]
+      if (nrow(matching_row) > 0) {
+        Alpha_Diversity_df$Color[i] <- matching_row$Color
+        }
+      }
+
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+
+    levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% ordered_levels[1:34]] <-
+      "Other"
+
+    if (Datasetname == "WF") {
+        p <- ggplot(Alpha_Diversity_df, 
+          aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+          geom_bar(stat = "identity") +
+          facet_grid(. ~ factor(Season, levels = SeasonOrder), drop = TRUE, scale = "free", 
+                     space = "free_x")
+        COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in%
+                                              unique(sample_data(ps)$Season)]
+    } else {
+       p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_x")
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%
+                                            unique(sample_data(ps)$Reps)]
+    }
+      
+      p <- p + 
+        atheme2 +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+      
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = WIDTH, height = 6)
+    
+    plot(Alpha_Diversity_BarPlot )
+    
+}
+
+```
+
+## 4.4 Core-Microbiome 
+
+Some thoughts from: 
+McMurtrie, J., Alathari, S., Chaput, D. L., Bass, D., Ghambi, C., Nagoli, J., ... & Tyler, C. R. (2021). Relationships between pond water and tilapia skin microbiomes in aquaculture ponds in Malawi. bioRxiv.McMurtrie, J., Alathari, S., Chaput, D. L., Bass, D., Ghambi, C., Nagoli, J., ... & Tyler, C. R. (2021). Relationships between pond water and tilapia skin microbiomes in aquaculture ponds in Malawi. bioRxiv. 
+Core microbiome analysis seeks to find taxa conserved between samples above a defined prevalence threshold. In this case we are interested in finding the core MB of the Fish Swab community which is present in fish across different Locations sites. Core calculations will be performed with the microbiome package. We will then visualise these core taxa as a heatmap using pheatmap. This will also reveal abundances across both Loc and fish samples, indicating if the fish core taxa are in high abundance in the Loc water and therefore potentially non-residents. Final visualisations for the finished figure requires some manual editing in Inkscape.
+
+R Setup Libraries
+
+Import phyloseq objects
+Weight up in choosing what taxa level to study. The full ASV set is large and requires a low core threshold as there is a reasonable degree of variation in ASVs e.g. likely different strains. However, in the core analysis we are most interested in the major types of organisms appearing to be common in either system. For instance we could have three individual ASVs of the same genus, each a key photosynthetic but only one is dominant per pond site, collectively though they are occupying the same niche. This is obviously a generalisation and not applicable to all scenarios. Most core studies I have seen group at genus level. 
+I did explore the use of tip_gloming instead to use a phylogenetic informed grouping level, rather than arbitrary taxonomy, but this compromises resolution of taxonomic classifications that I am not willing to accept. 
+
+```{r, message=FALSE, warning=FALSE, include=TRUE}
+
+for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE|ps_Fish", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")) {
+  
+
+  ps <- pslist[[Dataset]]
+  Datasetname <- sub("ps_", "", Dataset)
+  pslist[[paste("Core", Datasetname, sep="_")]] <- list()
+  require(phyloseq)
+  
+  core_taxa_standard <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      microbiome::core_members(., detection = 0.0001, prevalence = 90/100)
+  
+  #ps_rel <- microbiome::transform(pslist[[Dataset]], "compositional")
+  #core_taxa_standard <- microbiome::core_members(ps_rel, detection = 0.0001, prevalence = 90/100)
+  #ps_core <- microbiome::core(ps_rel, detection = 0.0001, prevalence = .9)
+  
+  ps_core <- prune_taxa(core_taxa_standard, ps)
+  
+  core_taxa <- microbiome::taxa(ps_core)
+  tax_mat <- tax_table(ps_core)
+  tax_df <- as.data.frame(tax_mat)
+  tax_df$ASV <- rownames(tax_df)
+  # select taxonomy of only those OTUs that are core memebers based on the thresholds that were used.
+  core_taxa_class <- dplyr::filter(tax_df, rownames(tax_df) %in% core_taxa)
+  knitr::kable(head(core_taxa_class))
+
+  ps_rel_gen <- microbiome::aggregate_taxa(ps_core, "Genus")
+  # Check if any taxa with no genus classification. aggregate_taxa will merge all unclassified to Unknown
+  any(taxa_names(ps_rel_gen) == "Unknown")
+  # Remove Unknown
+  ps_rel_gen <- subset_taxa(ps_rel_gen, Genus!="Unknown")
+  library(RColorBrewer)
+  prevalences <- seq(.05, 1, .05)
+  detections <- round(10^seq(log10(1e-5), log10(.2), length = 10), 3)
+
+  # p1 <- microbiome::plot_core(ps_rel_gen, 
+  #               plot.type = "heatmap", 
+  #               colours = rev(brewer.pal(5, "RdBu")),
+  #               prevalences = prevalences, 
+  #               detections = detections, min.prevalence = .8) +
+  #   xlab("Detection Threshold (Relative Abundance (%))")
+  # p1 <- p1 + theme_bw() + ylab("ASVs")
+  # p1
+  
+ pslist[[paste("Core", Datasetname, sep="_")]] <- core_taxa_class
+}
+
+```
+
+### 4.4.1 Plot Core
+
+```{r,  message=FALSE, warning=FALSE, fig.width=7, fig.height=10}
+TaxLevel <- "ASV"
+flipped <- T
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]) {
+  
+  require(plyr); require(dplyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    ps <- pslist[[Dataset]]
+    ps2 <- ps #pslist[[paste(Dataset, "WF", sep="")]]
+    
+    core_taxa_standard <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      microbiome::core_members(., detection = 0.0001, prevalence = 90/100)
+    
+    GroupOfInterest <- core_taxa_standard
+
+    FILENAME    <- paste(paste(save_name, "Core_BarPlot_noWF", Datasetname, sep="_"), ".png", sep="")
+    
+    if (Datasetname %in% c("GC", "OE")) {
+      WIDTH <- 10 + length(sample_names(pslist[[Dataset]])) *0.12
+    } else if (Datasetname %in% c("WF")) {
+      WIDTH <-  5 + length(sample_names(pslist[[Dataset]])) *0.12
+    } else {
+     WIDTH <-  10 + length(sample_names(pslist[[Dataset]])) *0.12
+    }
+    
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- ps2 %>%
+    #tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    #filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    #ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    # phylum_abundance <- ps_alpha_barplot %>%
+    #   dplyr::group_by(.data[[TaxLevel]]) %>%
+    #   dplyr::summarise(TotalAbundance = sum(Abundance))
+    # ordered_levels <- phylum_abundance %>%
+    #   dplyr::arrange(desc(TotalAbundance)) %>%
+    #   pull(.data[[TaxLevel]])
+    #   
+    # ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+
+    ps_alpha_barplot$SampleID <- factor(ps_alpha_barplot$SampleID, levels = 
+                                          SSU_Samples[SSU_Samples %in% sample_names(ps2)])
+  
+    
+    SSU_Samples[SSU_Samples %in% sample_names(ps2)]
+    
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,]
+    #df <- df[df$OTU %in% GroupOfInterest,]
+    df$Abundance[!(df$OTU %in% GroupOfInterest)] <- 0
+    
+    phylum_abundance <- df %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+    ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+      
+    df$Taxa <- factor(df[[TaxLevel]], levels = ordered_levels)
+    
+    Alpha_Diversity_df <- df
+    Alpha_Diversity_df$Colors <- NA
+    Alpha_Diversity_df$Reps <-  factor(Alpha_Diversity_df$Reps, levels = RepOrder[RepOrder %in% Alpha_Diversity_df$Reps])
+    
+    #################################
+    #Update to colored_taxonomy_Fish#
+    #################################
+
+    taxa_levels <- c("Genus", "Family", "Order", "Class", "Phylum")
+    taxa_level2 <- c("Taxa", "Phylum2")
+
+    Alpha_Diversity_df$Color <- "grey"
+
+  # Loop through each row of Alpha_Diversity_df
+  for (i in 1:nrow(Alpha_Diversity_df)) {
+    matching_color <- NA  # Initialize matching color to NA
+    # Loop through each taxonomic level
+    for (level in taxa_levels) {
+    matching_row <- colored_taxonomy_Fish[colored_taxonomy_Fish$Taxa %in%
+                                            Alpha_Diversity_df[[level]][i], ]
+    # If there's a match, update matching_color and exit the loop
+    if (nrow(matching_row) > 0) {
+      matching_color <- matching_row$Color
+      break
+    }
+  }
+  # If there's no match at any level, try matching without numbers
+  if (is.na(matching_color)) {
+    matching_row <- colored_taxonomy_Fish[gsub("\\d", "", colored_taxonomy_Fish$Phylum2) %in%
+                                            Alpha_Diversity_df[["Phylum"]][i], ]
+    if (nrow(matching_row) > 0) {
+      matching_color <- matching_row$Color
+    }
+  }
+  # Assign the matching color to the corresponding row in Alpha_Diversity_df
+  Alpha_Diversity_df$Color[i] <- matching_color
+  }
+    
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+    color_mapping[["Candidatus Megaira"]] <- "purple"
+    color_mapping[["Acinetobacter.lwoffii"]] <- "#996600"
+    color_mapping[["Acinetobacter.johnsonii"]] <- "#663300"
+    color_mapping[["Shewanella"]] <- "#FF3366"
+    color_mapping[["Shewanella.baltica"]] <- "#FF0099"
+    color_mapping[["Shewanella.putrefaciens"]] <-"#FF0066"
+    color_mapping[["Photobacterium"]] <- "#FFF000"
+    color_mapping[["Aeromonas"]] <- "#FFCC00"
+    
+
+    levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% head(unique(sub(".*:", "", GroupOfInterest)), 34)  ] <-
+      "Other"
+
+    if (flipped == FALSE) {
+      if (Datasetname == "WF") {
+        p <- ggplot(Alpha_Diversity_df, 
+          aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+          geom_bar(stat = "identity") +
+          facet_grid(. ~ factor(Season, levels = SeasonOrder), drop = TRUE, scale = "free", 
+                     space = "free_x")
+        COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in%
+                                              unique(sample_data(ps2)$Season)]
+      } else {
+       p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_x")
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%                                    unique(sample_data(ps2)$Reps)]
+      }
+      
+      p <- p + 
+        atheme +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+        ylim(0, 60) +
+  
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+    
+        Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+        ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300,
+               width = WIDTH, height = 6)
+        
+    } else if (flipped == TRUE) {
+      # New facet label names for supp variable
+    
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%                                    unique(sample_data(ps2)$Reps)]
+      
+      Short.labs <- gsub("[^0-9]", "", Alpha_Diversity_df$Reps)
+      names(Short.labs) <- Alpha_Diversity_df$Reps
+
+      
+      p <- ggplot(Alpha_Diversity_df, aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            #facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_x", switch = "y")
+        facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_y", switch = "y", 
+              labeller = labeller(Reps = Short.labs)) 
+      
+      p <- p + 
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") + #atheme+
+        scale_fill_manual(values = color_mapping) +
+        ylim(0, 80) +
+            theme(axis.title.y=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks.y=element_blank()) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13", size=15, face ="bold"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 15, face = "bold", angle = 45, hjust = 1),
+        #strip.text.y.left = element_text(size = 9,face = "bold"), 
+        #axis.title.y.left = element_text(size=12,face = "bold")
+        ) +
+        theme(legend.position = "none")
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-l', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    Core_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Core_BarPlot <- plot_grid(Core_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(Core_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 2.7, height = 10)
+    
+    plot(Core_BarPlot)
+    }
+}
+
+```
+
+#-
+
+## 4.5 Bacterioplankton vs Fish (time and space)
+
+Analyzing here the taxa that are shared between bacterioplankton and the fish gill mucus, 
+in the first step we determine the "most shared" taxa by geometric mean of overlapping taxa between datasets 
+In the second step we run mantel tests for the biological samples replicates and the bacterioplankton to see which groups show the strongest overall matrix correlation
+Finally we plot the shared taxa between bacterioplankton and fish mucus but excluding the fish gill core taxa which we saw before highly abundant in the fish but rare in the bacterioplankton
+
+### 4.5.1 Most overlapping taxa 
+
+```{r,  message=FALSE, warning=FALSE}
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]) {
+  Datasetname <- sub("ps_","", Dataset)
+  
+  ps <- pslist[[paste("ps", Datasetname, sep="_")]]
+  
+  SampleSums <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      phyloseq::otu_table() %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "SampleID") %>%
+      dplyr::left_join(SAMDF16S, by = c("SampleID" = "SampleID")) %>%
+      dplyr::group_by(SampleID) %>%
+      dplyr::summarise(dplyr::across(rownames(tax_table(ps)), mean, na.rm = TRUE)) %>% 
+      t() %>%
+      as.data.frame() %>%
+      `colnames<-`(.[1, ]) %>%
+      .[-1, ] %>%
+      stats::setNames(paste0("avg_", colnames(.))) %>%
+      mutate_all(as.numeric) %>%
+      round(., digits = 2) %>%
+      rownames_to_column(var="ASV")
+  
+   SeasonSums <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      phyloseq::otu_table() %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "SampleID") %>%
+      dplyr::left_join(SAMDF16S, by = c("SampleID" = "SampleID")) %>%
+      dplyr::group_by(Season) %>%
+      dplyr::summarise(dplyr::across(rownames(tax_table(ps)), mean, na.rm = TRUE)) %>% 
+      t() %>%
+      as.data.frame() %>%
+      `colnames<-`(.[1, ]) %>%
+      .[-1, ] %>%
+      stats::setNames(paste0("avg_", colnames(.))) %>%
+      mutate_all(as.numeric) %>%
+      round(., digits = 2) %>%
+      rownames_to_column(var="ASV")
+   
+   RepsSums <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      phyloseq::otu_table() %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "SampleID") %>%
+      dplyr::left_join(SAMDF16S, by = c("SampleID" = "SampleID")) %>%
+      dplyr::group_by(Replicates) %>%
+      dplyr::summarise(dplyr::across(rownames(tax_table(ps)), mean, na.rm = TRUE)) %>% 
+      t() %>%
+      as.data.frame() %>%
+      `colnames<-`(.[1, ]) %>%
+      .[-1, ] %>%
+      stats::setNames(paste0("avg_", colnames(.))) %>%
+      mutate_all(as.numeric) %>%
+      round(., digits = 2) %>%
+      rownames_to_column(var="ASV")
+   
+    ##########################
+    #Fish vs Bacterioplankton#
+    ##########################
+    WF_ASVmeans <- pslist$ps_WF %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      phyloseq::otu_table() %>%
+      t() %>%
+      as.data.frame() %>%
+            dplyr::mutate(ASVmeans_WF = rowMeans(.)) %>%
+            dplyr::mutate(ASV = rownames(.)) %>% 
+            dplyr::select(ASV, ASVmeans_WF)
+
+    Fish_ASVmeans <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      phyloseq::otu_table() %>%
+      t() %>%
+      as.data.frame() %>%
+            dplyr::mutate(ASVmeans_Fish = rowMeans(.)) %>%
+            dplyr::mutate(ASV = rownames(.)) %>% 
+            dplyr::select(ASV, ASVmeans_Fish)
+  
+  #Merge values on TAXON level
+  Fish_ASVmeans$Taxon <- sub("ASV\\d+:", "", Fish_ASVmeans$ASV)
+  Fish_Taxonmeans <- Fish_ASVmeans %>% 
+    dplyr::group_by(Taxon) %>%
+    dplyr::summarize(Taxon_means_Fish = sum(ASVmeans_Fish))  %>%
+    dplyr::arrange(desc(Taxon_means_Fish))
+  
+  WF_ASVmeans$Taxon <- sub("ASV\\d+:", "", WF_ASVmeans$ASV)
+  WF_Taxonmeans <- WF_ASVmeans %>% 
+    dplyr::group_by(Taxon) %>%
+    dplyr::summarize(Taxon_means_WF = sum(ASVmeans_WF))  %>%
+    dplyr::arrange(desc(Taxon_means_WF))
+    
+#Combine Datasets
+  Overlapping_Fish <- Fish_Taxonmeans[Fish_Taxonmeans$Taxon %in% WF_Taxonmeans$Taxon,]
+  Overlapping_WF <- WF_Taxonmeans[WF_Taxonmeans$Taxon %in% Fish_Taxonmeans$Taxon,]
+  Overlapping <- Overlapping_Fish %>% left_join(Overlapping_WF)
+
+###########################################################  
+#Take geometric mean of overlapping taxa in fish and Water#  
+  print(paste("Most overlapping taxa between", Datasetname, "and Bakterioplankton"))
+  print(Overlapping %>% 
+    dplyr::mutate(CombinedAbundance = sqrt(Taxon_means_Fish * Taxon_means_WF)) %>%
+    dplyr::arrange(desc(CombinedAbundance)))
+  
+  
+  #################################
+  #Overlapping ASVs betweem biomes#
+  #################################
+  
+  #Combine Datasets
+  Overlapping_Fish_ASV <- Fish_ASVmeans[Fish_ASVmeans$ASV %in% WF_ASVmeans$ASV ,]
+  Overlapping_WF_ASV <- WF_ASVmeans[WF_ASVmeans$ASV %in% Fish_ASVmeans$ASV ,]
+  Overlapping_ASV <- Overlapping_Fish_ASV %>% left_join(Overlapping_WF_ASV)
+  
+
+  # print(paste("Relative Abundance of Overlapping taxa between biomes in", Datasetname))
+  # print(sum(Overlapping$ASVmeans))
+   
+  print(paste("Relative Abundance of Overlapping taxa between biomes in Bacterioplankton"))
+  print(sum(WF_ASVmeans[WF_ASVmeans$ASV %in% Overlapping_ASV$ASV,]$ASVmeans))
+  
+  print(paste("Relative Abundance of Overlapping taxa between biomes in Bacterioplankton and", Datasetname))
+
+    
+  RepsSums_BiomeSums <-  RepsSums[RepsSums$ASV %in% Overlapping_ASV$ASV,] %>%
+  dplyr::summarize(across(starts_with("avg_"), sum, na.rm = TRUE))%>%
+  gather(., key = "Replicates", value = "SummedAbundance") %>%
+  dplyr::arrange(desc(SummedAbundance))
+  print(RepsSums_BiomeSums)
+  print(mean(RepsSums_BiomeSums$SummedAbundance))
+  
+  RepsSums_BiomeSums_NoCore <-  RepsSums[RepsSums$ASV %in% setdiff(Overlapping_ASV$ASV,  pslist[[paste("Core", Datasetname, sep="_")]]$ASV),] %>%
+  dplyr::summarize(across(starts_with("avg_"), sum, na.rm = TRUE))%>%
+  gather(., key = "Replicates", value = "SummedAbundance") %>%
+  dplyr::arrange(desc(SummedAbundance))
+  print(RepsSums_BiomeSums_NoCore)
+  print(mean(RepsSums_BiomeSums_NoCore$SummedAbundance))
+}
+```
+
+### 4.5.2 Mantel tests with spatio-temporal resolution
+
+```{r,  message=FALSE, warning=FALSE, fig.width=6, fig.height=8}
+####################################################
+#Mantel test Bacterioplankton vs Fish per Replicate#
+####################################################
+Bacterioplankton_Mantel_list <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]) {
+  Datasetname <- sub("ps_","", Dataset)
+  Bacterioplankton_Mantel_list[[Datasetname]] <- list()
+  ps <- pslist[[paste("ps", Datasetname, sep="_")]]
+  
+  RepsSums <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      phyloseq::otu_table() %>%
+      as.data.frame() %>%
+      rownames_to_column(var = "SampleID") %>%
+      dplyr::left_join(SAMDF16S, by = c("SampleID" = "SampleID")) %>%
+      dplyr::group_by(Replicates) %>%
+      dplyr::summarise(dplyr::across(rownames(tax_table(ps)), mean, na.rm = TRUE)) %>% 
+      t() %>%
+      as.data.frame() %>%
+      `colnames<-`(.[1, ]) %>%
+      .[-1, ] %>%
+      stats::setNames(paste0("avg_", colnames(.))) %>%
+      mutate_all(as.numeric) %>%
+      round(., digits = 2) %>%
+      rownames_to_column(var="ASV")
+  
+  RepsSums$Taxon <- sub("ASV\\d+:", "", RepsSums$ASV)
+  RepsSums_Taxonmeans <- RepsSums %>% 
+    dplyr::group_by(Taxon) %>%
+    dplyr::summarize(across(starts_with("avg_"), sum, na.rm = TRUE))
+ 
+  RepsSums_Taxonmeans <- RepsSums_Taxonmeans %>%
+      dplyr::rowwise() %>%
+      dplyr::mutate(RowSum = sum(c_across(starts_with("avg_")), na.rm = TRUE)) %>%
+      dplyr::arrange(desc(RowSum))
+  
+  merged_df <- inner_join(RepsSums_Taxonmeans, WF_Taxonmeans, by = "Taxon")
+  merged_df2 <- as.data.frame(merged_df)
+  rownames(merged_df2) <- merged_df2$Taxon
+  merged_df2 <- merged_df2[,grepl("avg_", colnames(merged_df2))]
+  colnames(merged_df2) <- sub("avg_", "", colnames(merged_df2))
+  TAXA <- as.data.frame(tax_table(ps))
+  TAXA$Taxa <-  sub("ASV\\d+:", "", rownames(TAXA ))
+  TAXA <- TAXA[!duplicated(TAXA$Taxa),][c("Phylum", "Taxa")]
+  long_df<- merged_df2 %>%
+      pivot_longer(cols = everything(), 
+               names_to = "Replicates", 
+               values_to = "Abundance") 
+  
+  long_df <- cbind(Taxa = rownames(merged_df2), long_df) 
+  long_df<- long_df %>%
+    left_join(SAMDF16S[!duplicated(SAMDF16S$Replicates),]) %>%
+    left_join(TAXA)
+
+  #long_df$Abundance[!(long_df$Taxa %in% GroupOfInterest)] <- 0
+  
+  
+  phylum_abundance <- long_df %>%
+      dplyr::group_by(.data[["Taxa"]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+    ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[["Taxa"]])
+
+    long_df $Taxa <- factor(long_df[["Taxa"]], levels = ordered_levels)
+    
+    calculate_correlations <- function(df, columns, comparison_column) {
+      correlations <- sapply(columns, function(col) {
+      stats::cor(df[[col]], df[[comparison_column]], use = "complete.obs", 
+               method = c("pearson"))
+      })
+      return(correlations)
+    }
+
+  # Get the columns you want to compare
+  columns_to_compare <- names(RepsSums_Taxonmeans)[grep("^avg_", names(RepsSums_Taxonmeans))]
+
+  # Calculate the correlations
+  correlations <- calculate_correlations(merged_df, columns_to_compare, "Taxon_means_WF")
+
+  correlations %>% 
+    as.data.frame() %>% 
+     dplyr::arrange(desc(correlations))
+
+#############################
+#Mantel Test on every column#
+#############################
+  mantel_results <- lapply(columns_to_compare, function(COLUM) {
+    # Create distance matrices for the column and Taxon_means_WF
+    dist_matrix_col <- as.matrix(dist(merged_df[[COLUM]], method = "euclidean"))
+    dist_matrix_wf <- as.matrix(dist(merged_df$Taxon_means_WF, method = "euclidean"))
+  
+    # Perform the Mantel test
+    mantel_test <- mantel(dist_matrix_col, dist_matrix_wf, permutations = 999)
+    return(c(mantel_test$statistic, mantel_test$signif))
+  })
+  
+  mantel_results_df <- as.data.frame(do.call(rbind, mantel_results))
+  
+  colnames(mantel_results_df) <- c("Mantel_Statistic", "P_Value")
+  
+  mantel_results_df <- cbind(Column = columns_to_compare, mantel_results_df)
+
+  # Order the results by Mantel statistic
+  mantel_results_df <- mantel_results_df %>%
+  dplyr::arrange(desc(Mantel_Statistic))
+  
+  mantel_results_df$Replicates <- sub("avg_", "", mantel_results_df$Column)
+
+  mantel_results_df <- mantel_results_df %>% 
+  dplyr::left_join(SAMDF16S[SAMDF16S$Species %in% Datasetname & !duplicated(SAMDF16S$Replicates),])
+
+  mantel_results_df$Reps <- factor(mantel_results_df$Reps, levels = RepOrder)
+
+  Bacterioplankton_Mantel_list[[Datasetname]] <- mantel_results_df 
+}
+
+
+Bacterioplankton_Mantel <- rbind(Bacterioplankton_Mantel_list$OE, Bacterioplankton_Mantel_list$GC)
+
+#####################
+#Plot Mantel Results#
+#####################
+Bacterioplankton_Mantel$Season <- factor(Bacterioplankton_Mantel$Season, levels=SeasonOrder)
+RepOrder2 <- 
+  c("SU 633", "SU 651", "SU 665", "SU 692", "SU 713",     
+  "AU 633", "AU 651",  "AU 665", "AU 692", "AU 713",  
+  "WI 633", "WI 651", "WI 665", "WI 692", "WI 713",   
+  "SP 633", "SP 651", "SP 665", "SP 692", "SP 713") 
+Bacterioplankton_Mantel$Reps <- factor(Bacterioplankton_Mantel$Reps, levels=RepOrder2)
+Bacterioplankton_Mantel$Species <- factor(Bacterioplankton_Mantel$Species, levels =c("OE", "GC"))
+  Mantel_plot <- Bacterioplankton_Mantel %>% 
+    ggplot(., aes(x=Species, y=Reps, fill=Mantel_Statistic )) +
+    geom_tile() +
+     scale_fill_gradient2(
+       low = "#FFFFFF",
+       high = "#006000",
+      limit = c(-0.2,1)) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 90, size = 15, face ="bold"),
+        #axis.title.x.bottom = element_text(size=15,face = "bold"),
+        #axis.title.y.left = element_text(size=15,face = "bold"),
+        strip.text.x = element_text(size = 15, face = "bold"),
+        strip.text.x.bottom = element_text(size = 15,face = "bold"),
+        strip.text.y.left = element_text(size = 15,face = "bold"),
+        strip.text.y.right = element_text(size = 15,face = "bold"),
+        axis.title.x.bottom = element_blank(), 
+        axis.title.y.left = element_blank(), 
+        axis.text.x.bottom = element_text(face = "bold", angle = 45, hjust = 1),
+        axis.text.y.left = element_text(face = "bold", size = 15),
+        axis.text.y.right = element_text(face = "bold", size = 15),
+        legend.title = element_text(size = 15, face ="bold"),
+        legend.text = element_text(size = 15,face = "bold"),
+        plot.title = element_text(size = 15, face = "bold"),
+        plot.subtitle = element_text(size = 15),
+        plot.caption = element_text(size = 15)) +
+    labs(#title = "Correlation relationship between avg.dist Bray-Curtis matrices and varibles", y = "Sample kind", 
+      fill="corr") +
+      labs(fill = "Mantel's r") +
+    #theme(legend.box.background = element_rect(color = "black"))
+    theme(legend.position="right", legend.key.width = unit(1, "cm")) 
+  Mantel_plot <- Mantel_plot +  geom_text(vjust=0.76,hjust=0.49, aes(label = paste0(c("","*")[(abs(P_Value) <= .05)+1],
+              c("","*")[(abs(P_Value) <= .001)+1], c("","*")[(abs(P_Value) <= .001)+1])))
+
+ # Mantel_plot <- Mantel_plot + facet_grid(. ~ factor(Season, levels = SeasonOrder), drop = TRUE, scale = #"free", space = "free_x")
+  Mantel_plot <- Mantel_plot + facet_grid(vars(Season), scale="free")
+  
+  Mantel_plot <- cowplot::plot_grid(Mantel_plot, labels = c(""), ncol = 1)
+  Mantel_plot <- plot_grid(Mantel_plot, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+  plot(Mantel_plot)
+      
+ggsave(Mantel_plot, filename = paste(paste("Mantel_test_Bacterioplankton_FishReps",
+          sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 4,height = 7)
+        
+```
+
+### 4.5.3 Stacked barplot of overlapping taxa without core
+
+```{r,  message=FALSE, warning=FALSE, fig.width=6, fig.height=10}
+colored_taxonomy_Fish <- pslist$Optics$colored_taxonomy_Fish
+
+#################
+#GroupofInterest#
+#################
+GroupOfInterest <- setdiff(Overlapping_ASV$ASV, pslist$Core_Fish$ASV)
+
+Comparison_Name <- "Biomes_Overlapping_Taxa_noCore"
+TaxLevel <- "ASV"
+flipped <- T
+for (Dataset in names(pslist)[grepl("ps_GCWF|ps_OEWF", names(pslist))]) {
+  
+  require(plyr); require(dplyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    ps <- pslist[[Dataset]] 
+    
+    GroupOfInterest <- GroupOfInterest
+    
+
+    FILENAME    <- paste(paste(save_name, "Alpha_BarPlot", Comparison_Name, Datasetname,  sep="_"), ".png", sep="")
+    
+    if (Datasetname %in% c("GC", "OE")) {
+      WIDTH <- 10 + length(sample_names(pslist[[Dataset]])) *0.12
+      HEIGHT <- 10 #length(sample_names(pslist[[Dataset]])) *0.08
+    } else if (Datasetname %in% c("WF")) {
+      WIDTH <-  5 + length(sample_names(pslist[[Dataset]])) *0.12
+       HEIGHT <- 10 #length(sample_names(pslist[[Dataset]])) *0.08
+    } else {
+     WIDTH <-  10 + length(sample_names(pslist[[Dataset]])) *0.12
+      HEIGHT <- 10 #length(sample_names(pslist[[Dataset]])) *0.08
+    }
+    
+  
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- ps %>%
+    #tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    #filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+  
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    #ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    # phylum_abundance <- ps_alpha_barplot %>%
+    #   dplyr::group_by(.data[[TaxLevel]]) %>%
+    #   dplyr::summarise(TotalAbundance = sum(Abundance))
+    # ordered_levels <- phylum_abundance %>%
+    #   dplyr::arrange(desc(TotalAbundance)) %>%
+    #   pull(.data[[TaxLevel]])
+    #   
+    # ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+
+    ps_alpha_barplot$SampleID <- factor(ps_alpha_barplot$SampleID, levels = 
+                                          SSU_Samples[SSU_Samples %in% sample_names(pslist[[Dataset]])])
+  
+    
+    SSU_Samples[SSU_Samples %in% sample_names(pslist[[Dataset]])]
+    
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,]
+    #df <- df[df$OTU %in% GroupOfInterest,]
+    df$Abundance[!(df$OTU %in% GroupOfInterest)] <- 0
+    
+    phylum_abundance <- df %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+    ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+      
+    df$Taxa <- factor(df[[TaxLevel]], levels = ordered_levels)
+    
+    Alpha_Diversity_df <- df
+    Alpha_Diversity_df$Colors <- NA
+    Alpha_Diversity_df$Reps <-  factor(Alpha_Diversity_df$Reps, levels = RepOrder[RepOrder %in%
+                                                                        Alpha_Diversity_df$Reps])
+    
+    #################################
+    #Update to colored_taxonomy_Fish#
+    #################################
+
+    taxa_levels <- c("Genus", "Family", "Order", "Class", "Phylum")
+    taxa_level2 <- c("Taxa", "Phylum2")
+
+    Alpha_Diversity_df$Color <- "grey"
+
+  # Loop through each row of Alpha_Diversity_df
+  for (i in 1:nrow(Alpha_Diversity_df)) {
+    matching_color <- NA  # Initialize matching color to NA
+    # Loop through each taxonomic level
+    for (level in taxa_levels) {
+    matching_row <- colored_taxonomy_Fish[colored_taxonomy_Fish$Taxa %in%
+                                            Alpha_Diversity_df[[level]][i], ]
+    # If there's a match, update matching_color and exit the loop
+    if (nrow(matching_row) > 0) {
+      matching_color <- matching_row$Color
+      break
+    }
+  }
+  # If there's no match at any level, try matching without numbers
+  if (is.na(matching_color)) {
+    matching_row <- colored_taxonomy_Fish[gsub("\\d", "", colored_taxonomy_Fish$Phylum2) %in%
+                                            Alpha_Diversity_df[["Phylum"]][i], ]
+    if (nrow(matching_row) > 0) {
+      matching_color <- matching_row$Color
+    }
+  }
+  # Assign the matching color to the corresponding row in Alpha_Diversity_df
+  Alpha_Diversity_df$Color[i] <- matching_color
+  }
+    
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+    color_mapping[["Candidatus Megaira"]] <- "purple"
+    color_mapping[["Acinetobacter.lwoffii"]] <- "#996600"
+    color_mapping[["Acinetobacter.johnsonii"]] <- "#663300"
+    color_mapping[["Shewanella"]] <- "#FF3366"
+    color_mapping[["Shewanella.baltica"]] <- "#FF0099"
+    color_mapping[["Shewanella.putrefaciens"]] <-"#FF0066"
+    color_mapping[["Photobacterium"]] <- "#FFF000"
+    color_mapping[["Aeromonas"]] <- "#FFCC00"
+    
+
+    levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% head(unique(sub(".*:", "", GroupOfInterest)), 34)  ] <-
+      "Other"
+
+    if (flipped == FALSE) {
+      if (Datasetname == "WF") {
+        p <- ggplot(Alpha_Diversity_df, 
+          aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+          geom_bar(stat = "identity") +
+          facet_grid(. ~ factor(Season, levels = SeasonOrder), drop = TRUE, scale = "free", 
+                     space = "free_x")
+        COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in%
+                                              unique(sample_data(ps)$Season)]
+      } else {
+       p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_y")
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%                                    unique(sample_data(ps)$Reps)]
+      }
+      p <- p + 
+        atheme +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+        ylim(0, 100) +
+  
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+    
+        Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+        ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300,
+               width = WIDTH, height = 6)
+        
+    } else if (flipped == TRUE) {
+      # New facet label names for supp variable
+    
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%                                    unique(sample_data(ps)$Reps)]
+      
+      Short.labs <- gsub("[^0-9]", "", Alpha_Diversity_df$Reps)
+      names(Short.labs) <- Alpha_Diversity_df$Reps
+
+      
+      p <- ggplot(Alpha_Diversity_df, aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            #facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_x", switch = "y")
+        facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_x", switch = "y", 
+              labeller = labeller(Reps = Short.labs)) 
+      
+      p <- p + 
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") + #atheme+
+        scale_fill_manual(values = color_mapping) +
+        ylim(0, 100) +
+            theme(axis.title.y=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks.y=element_blank()) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13", size=15, face ="bold"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 15, face = "bold", angle = 45, hjust = 1),
+        #strip.text.y.left = element_text(size = 9,face = "bold"), 
+        #axis.title.y.left = element_text(size=12,face = "bold")
+        ) +
+        theme(legend.position = "none")
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-l', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 2.7, height = HEIGHT)
+    
+    plot(Alpha_Diversity_BarPlot)
+    }
+}
+```
+
+
+# - 
+
+
+# 5 Alpha diversity
+
+first steps of alpha diversity analysis 
+the dataset shows overall little patterns and high multicollinearity between influencing variables, 
+therefore we decided to skip modeling alpha diversity 
+
+## 5.1 Metrics & Stats
+
+```{r, message=FALSE, warning=FALSE}
+
+###################
+#Phylum Statistics#
+###################
+Phylum_Statistics_list <- list()
+for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")) {
+  
+  individual <- pslist[[Dataset]] %>% tax_glom(taxrank = "Phylum") %>% 
+    transform_sample_counts(function(x) {x/sum(x)}) %>% 
+    psmelt() %>% 
+    #dplyr::filter(Abundance > 0.0005) %>%                          
+    dplyr::arrange("Phylum") 
+  
+  individual_abund <- as.data.frame(individual %>%
+    dplyr::select(Sample, SampleID, Replicates2, Phylum, Abundance) %>%
+    dplyr::group_by(Phylum, Sample) %>%
+    dplyr::summarise(TotalAbundance = (sum(Abundance))*100)) %>%
+    dplyr::ungroup()%>%
+    dplyr::left_join(individual %>% 
+                     dplyr::select(Sample, SampleID, Replicates2, Phylum, Abundance),
+                    by = c("Sample", "Phylum"))
+  
+  
+
+  individual_abund_SD <- individual_abund %>%
+  dplyr::group_by(Phylum) %>%
+  dplyr::summarise(SD = round(sd(Abundance)*100, digits = 1))
+  
+  merged_species <- merge_samples(pslist[[Dataset]], "Species")
+  # Use psmelt to obtain a long-format data.frame
+  merged_species <- merged_species %>% tax_glom(taxrank = "Phylum") %>% 
+    transform_sample_counts(function(x) {x/sum(x)}) %>% 
+    psmelt() %>% 
+    #dplyr::filter(Abundance > 0.0005) %>%                          
+    dplyr::arrange("Phylum")    
+  
+  merged_species_abund <- as.data.frame(merged_species %>%
+    dplyr::select(Sample, SampleID,  Phylum, Abundance) %>%
+    dplyr::group_by(Phylum, Sample) %>%
+    dplyr::summarise(TotalAbundance = round(sum(Abundance)*100,digits = 1)))
+
+  print(Dataset)
+  data <- merged_species_abund %>%
+  left_join(individual_abund_SD) %>%
+  dplyr::arrange(desc(TotalAbundance))
+  print(data)
+
+  Phylum_Statistics_list[[Dataset]] <- data
+}
+
+write.csv2(do.call(rbind, Phylum_Statistics_list), file.path(path_Output_16S,paste(paste(save_name,"Phylum_Statistics_list",Date, sep="_"), ".csv", sep="")))
+
+```
+
+
+### 5.1.1 P:B Ratio
+
+Ratios of Proteobacteria and Bacteroidetes
+
+Rosado, D., Pérez-Losada, M., Severino, R., Cable, J., & Xavier, R. (2019). Characterization of the skin and gill microbiomes of the farmed seabass (Dicentrarchus labrax) and seabream (Sparus aurata). Aquaculture, 500, 57-64.
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+Variable <- "P_B_ratio"
+violin_PB_list <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]) {
+  
+    tryCatch({
+
+
+
+  library(EnvStats)
+  library(ggpubr)
+  
+  Datasetname <- sub("ps_", "", Dataset)
+  
+  violin_PB_list[[Datasetname]] <- list()
+  individual <- pslist[[Dataset]] %>% tax_glom(taxrank = "Phylum") %>% 
+    transform_sample_counts(function(x) {x/sum(x)}) %>% 
+    psmelt() %>% 
+    #dplyr::filter(Abundance > 0.0005) %>%                          
+    dplyr::arrange("Phylum") 
+  
+  individual_abund <- as.data.frame(individual %>%
+    dplyr::select(Sample, SampleID, Replicates2, Phylum, Abundance) %>%
+    dplyr::group_by(Phylum, Sample) %>%
+    dplyr::summarise(TotalAbundance = (sum(Abundance))*100)) %>%
+    dplyr::ungroup()%>%
+    dplyr::left_join(individual %>% 
+                     dplyr::select(Sample, SampleID, Replicates2, Phylum, Abundance),
+                    by = c("Sample", "Phylum"))
+  
+   FILENAME    <- paste(paste(save_name, Datasetname, "P:B_ratio", "Violin", sep="_"),".png", sep="")
+  
+   PB <- individual_abund[individual_abund$Phylum %in% c("Proteobacteria", "Bacteroidota"), ] %>%
+              dplyr::group_by(Sample) %>%
+              dplyr::mutate(P_B_ratio = TotalAbundance[Phylum == "Proteobacteria"] / 
+                               TotalAbundance[Phylum == "Bacteroidota"]) %>%
+              dplyr::filter(P_B_ratio < 25) %>%
+              dplyr::filter(Phylum == "Proteobacteria") %>%
+        left_join(SAMDF16S)
+   
+   print(mean( PB $P_B_ratio))
+   
+   #mean(PB[PB$Replicates =="OESU21ML",]$P_B_ratio) 
+   mean(PB[PB$Season =="Autumn_21",]$P_B_ratio)
+   
+      ###########
+      #Normality#
+      ###########
+      #print(PB  %>%
+      #  dplyr::group_by(fLOC, fSeason) %>%
+      #  rstatix::shapiro_test(Variable)
+      #  )
+   
+      ##########################  
+      #Homogeneity of variances#
+      ##########################  
+      print(
+        PB %>%
+        with(., car::leveneTest(.[["P_B_ratio"]], .[["fLOC"]]))
+      )
+      
+   p <- PB %>%
+        ggplot(aes(x=fLOC,y=.data[["P_B_ratio"]], colour=fLOC)) +
+        #geom_boxplot(aes(fill=LOC)) + atheme + 
+        geom_violin(aes(fill=fLOC)) + 
+        geom_jitter(aes(color = fLOC)) + 
+      
+        scale_color_manual(values= ggplot2::alpha(col.Palette$col.Palette.LOC, 1)) +    
+        scale_fill_manual(values= ggplot2::alpha(col.Palette$col.Palette.LOC, 0.4)) +
+        #geom_text_repel(aes(label = SampleID), data = adiv,   size=2.5)  +
+        labs(x = "", y = noquote(paste(Variable, " [", noquote("%"), "]", sep = ""))) + #"")
+        #ggtitle(paste(gg,  ggg, "over all sampling sites and seasons (Summer, Winter, Spring,)"))
+        theme(legend.position = "none") +
+        guides(fill=guide_legend(title="Species"))
+
+  
+       p <- p + atheme +
+        theme(
+          panel.background = element_rect(fill='transparent'), #transparent panel bg
+          plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+          ) +
+        theme(axis.title.x.bottom =  element_text(color="grey13"), 
+          strip.text = element_text(color = "black", face= "bold")) +
+        theme(
+          legend.title=element_text(size=12), 
+          legend.text=element_text(size=12)) +
+        theme(
+          panel.grid.major = element_line(colour = "white"), 
+          panel.grid.minor = element_line(colour = "white")) +
+        
+         facet_grid(. ~ factor(fSeason, levels=SeasonOrder), drop=TRUE,scale="free",space="free_x") +
+         stat_n_text(size = 2)
+      
+         p_adj_list <- list()
+         for (FSEASON in levels(PB$fSeason)){
+              p_adj <- sigminer::get_adj_p(PB[PB$fSeason %in% FSEASON,], .col = Variable, 
+                                 .grp = "fLOC", method = "wilcox.test", p.adjust.method ="holm")
+              p_adj_list[[FSEASON]] <- p_adj
+         }
+         
+         p_adj_list <- lapply(names(p_adj_list), function(FSEASON) {
+          df <- p_adj_list[[FSEASON]]
+          df$fSeason <- FSEASON
+          return(df)
+          })
+         
+        
+         p_adj<- do.call(rbind, p_adj_list)
+         p_adj <- p_adj %>% dplyr::select(fSeason, everything())
+         p_adj$fSeason <- factor( p_adj$fSeason, levels=SeasonOrder)
+         p_adj <- p_adj %>% dplyr::filter(p.signif != "ns")
+         
+         
+        p <- p + stat_pvalue_manual(p_adj, label = "p.signif", bracket.size = 0.5, #hide.ns =TRUE,
+                   tip.length=0.02, label.size=4) 
+        
+        p <- p + theme(axis.title.x = element_blank(), legend.position = "none")+ labs(x = NULL)
+        # 
+        # trial <- SAMDF
+        # upper.y <- max(trial[[Variable]])+(0.1*max(trial[[Variable]]))
+        # 
+        #  p_adj$y.position[1] <- max(trial[[Variable]])-(0.05*max(trial[[Variable]]))
+        #  p_adj$y.position[2] <- max(trial[[Variable]])+(0.05*max(trial[[Variable]]))
+        #  p_adj$y.position[3] <- max(trial[[Variable]])+(0*max(trial[[Variable]]))
+        # 
+        # p <- p + stat_pvalue_manual(p_adj, label = "p.signif", bracket.size = 0.5, #hide.ns =TRUE,
+        #           tip.length=0.02, label.size=4) 
+        # p <- p + stat_compare_means(method = "kruskal.test", label.y = upper.y) 
+      
+    prow <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+    violin_plot <- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.05, 0.98)) #title, 
+    plot(violin_plot)
+    ggsave(violin_plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 4,
+    height = 3)
+    
+    violin_PB_list[[Datasetname]] <- p
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+```
+
+## 5.2 Alpha Indices
+
+https://f1000research.com/articles/5-1492
+
+```{r, message=FALSE, warning=FALSE, include=TRUE}
+
+alphadiv_list <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE|ps_Fish|ps_SSU", names(pslist)[!grepl("WF", names(pslist))])]) {
+  
+  require(phyloseq)
+  require(vegan)
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  
+  Datasetname <- sub("ps_", "", Dataset)
+  a <- length(alphadiv_list)
+  Samples <- sample_names(pslist[[Dataset]])
+  ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+  ps <- prune_samples(sample_names(ps) %in% Samples, ps)
+  
+    rowSums(otu_table(ps))
+    min(rowSums(otu_table(ps)))
+    max(rowSums(otu_table(ps)))
+    mean(rowSums(otu_table(ps)))
+    
+    #Richness vs SequencingDepth#   
+    ggplot(data = data.frame("total_reads" =  phyloseq::sample_sums(ps),
+                         "observed" = phyloseq::estimate_richness(ps, measures = "Observed")[, 1]),
+       aes(x = total_reads, y = observed)) +
+      geom_point() +
+      geom_smooth(method="lm", se = FALSE) +
+      labs(x = "\nTotal Reads", y = "Observed Richness\n")
+
+    
+    
+      if (Datasetname %in% c("GC", "OE", "GCWF", "OEWF", "Fish")) {
+      print(paste("Samples removed for low frequency below 5000 seqs in;", Dataset, sep = ""))
+      print(which(rowSums(otu_table(ps)) < 5000))
+      ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+    } else if (Datasetname %in% c("SSU")) {
+      print(paste("Samples removed for low frequency below 5000 seqs in;", Dataset, sep = ""))
+      print(which(rowSums(otu_table(ps)) < 5000))
+      ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+    } else if (Datasetname %in% c("WF")) {
+      print(paste("No Waterfiler Samples removed ;", Dataset, sep = ""))
+      print(rowSums(otu_table(ps)))
+      ps_Filter <- ps
+    }
+    
+    ps_Filter_rare <- phyloseq::rarefy_even_depth(ps_Filter , rngseed = 123, replace = FALSE)
+
+    alphadiv_list[[a+1]] <- ps_Filter_rare
+    names(alphadiv_list)[[a+1]] <- paste("ps_rare", Datasetname, sep="_")
+    
+    
+    vegan::rarecurve(as.data.frame(otu_table(ps_Filter)), step=100, lwd=2, ylab="ASVs", label=F) 
+      abline(v=(min(rowSums(as.data.frame(otu_table(ps_Filter))))))
+    vegan::rarecurve(as.data.frame(otu_table(ps_Filter_rare)), step=100, lwd=2, ylab="ASVs", label=F)
+
+
+    adiv <- data.frame(
+      "Observed" = phyloseq::estimate_richness(ps_Filter_rare, measures = "Observed"),
+      "Chao1" = phyloseq::estimate_richness(ps_Filter_rare, measures = "Chao1"),
+      "Shannon" = phyloseq::estimate_richness(ps_Filter_rare, measures = "Shannon"),
+      "InvSimpson" = phyloseq::estimate_richness(ps_Filter_rare, measures = "InvSimpson"),
+      "LOC" = phyloseq::sample_data(ps_Filter_rare)$LOC,
+      "Season" = phyloseq::sample_data(ps_Filter_rare)$Season, 
+      "SampleID" = phyloseq::sample_data(ps_Filter_rare)$SampleID
+    )
+
+    alphadiv_list[[a+2]] <- adiv
+    names(alphadiv_list)[[a+2]] <- paste("adiv", Datasetname, sep="_")
+}
+    
+pslist$AlphaDiversity <- alphadiv_list
+alphadiv_list <- pslist$AlphaDiversity
+
+```
+
+## 5.3 Data Exploration
+
+```{r, message=FALSE, warning=FALSE, include=TRUE}
+
+DataExploration_list <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]) {
+
+  require(phyloseq)
+  require(vegan)
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(ggordiplots)
+  
+  Datasetname <- sub("ps_", "", Dataset)
+  ps <- pslist[[Dataset]]
+  
+  DataExploration_list[[paste(Datasetname)]] <- list()
+   
+  GroupingVariables <- c("Season", "LOC")
+  
+
+  Traits <- c(
+   "Salinity","O2_catch","SecchiDepth", "Temperature","pH_catch","Age",
+   "FCF", "HSI", "SSI", "Length", "Weigth", "GSI", "FillLevel",
+   "NH4",  "NO2", "NO3", "O2", "PO4", "pH", "SPM",
+  GroupingVariables)
+
+  print(paste("Samples removed for low frequency below 5000 seqs in;", Datasetname, sep = ""))
+  print(which(rowSums(otu_table(ps)) < 5000))
+  ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+  
+
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  Include <- Traits[Traits %!in% GroupingVariables]
+
+  df_Traits <- data.frame(sample_data(ps_Filter))
+
+  df_Traits <- df_Traits[names(df_Traits) %in% Traits]
+
+  df_Include <- df_Traits[names(df_Traits) %in% Include]
+  
+  #Just to inspect how well FGG-Data fit to your measured values while fishing: 
+  #df_Include[c("SPM", "SecchiDepth")]
+  #df_Include[c("pH_catch", "pH")]
+  #df_Include[c("O2_catch", "O2")]
+  
+  print("NAs in TraitData")
+  print(table(is.na(df_Include)))
+  
+  print((df_Include[!complete.cases(df_Include), ]))
+  
+  df_Include  <- df_Include[complete.cases(df_Include), ]
+  
+  df_Traits  <- df_Traits[complete.cases(df_Traits), ]
+  dim(df_Traits)
+  
+  #df_Include <- vegan::decostand(df_Include, method='standardize')
+  dim(df_Include)
+  
+  ps_Filter <- prune_samples(sample_names(ps_Filter)[sample_names(ps_Filter) %in%
+               rownames(df_Include[complete.cases(df_Include), ])], ps_Filter)
+  
+  adiv <- pslist$AlphaDiversity[[paste("adiv", Datasetname, sep="_")]]
+  adiv <- adiv[rownames(adiv) %in% rownames(df_Include),]
+  model_df <- left_join(df_Include %>% mutate(SampleID = rownames(.)), adiv %>% mutate(SampleID = rownames(.)))
+ 
+
+  model_df$fSeason <- factor(model_df$Season, level = SeasonOrder)
+  model_df$fLOC <- factor(model_df$LOC, level = LOCOrder)
+  model_df$Species <- substr(model_df$SampleID, 1, nchar(model_df$SampleID) - 9)
+  model_df$Replicates <- substr(model_df$SampleID, 1, nchar(model_df$SampleID) - 3)
+  model_df$fReplicates <- factor(model_df$Replicates, levels = VariableOrder[VariableOrder %in%                                                                               model_df$Replicates])
+  
+  rownames(model_df) <- model_df$SampleID
+  
+  print(Datasetname)
+  head(model_df)
+
+  DataExploration_list[[paste(Datasetname)]][[paste("ps_Filter")]] <- ps_Filter
+  DataExploration_list[[paste(Datasetname)]][[paste("model_df")]] <- model_df
+}
+
+pslist$DataExploration_list <- DataExploration_list 
+
+```
+
+### 5.3.1 Violin Plots
+
+#### 5.3.1.1 Alpha Between species 
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#################
+#Between species#
+#################
+for (Dataset in names(alphadiv_list)[grepl("adiv_SSU", names(alphadiv_list))]) {
+     require(plyr)
+     require(ggrepel) 
+     require(cowplot)
+     require(EnvStats)
+    #require("ggpubr")
+     require(car)
+     require(sigminer)
+     require(ggpubr)
+  
+    Variables <- c("Observed","Chao1.Chao1","Shannon", "InvSimpson")
+    Datasetname <- sub("adiv_", "", Dataset)
+    
+    adiv <- alphadiv_list[[Dataset]]
+    
+    for (Variable in Variables) {
+      FILENAME    <- paste(paste(save_name, Type, Variable, "Violin", sep="_"),".png", sep="")
+    
+      ###########
+      #Normality#
+      ###########
+      print(adiv  %>%
+        left_join(SAMDF16S) %>%
+        group_by(Species) %>%
+        rstatix::shapiro_test(Variable))
+      
+      ##########################  
+      #Homogeneity of variances#
+      ##########################  
+      print(
+        adiv %>%
+        left_join(SAMDF16S) %>%
+        with(., car::leveneTest(.[[Variable]], .[["fSpecies"]]))
+      )
+      
+      p <- adiv  %>%
+        left_join(SAMDF16S) %>%
+        ggplot(aes(x = fSpecies, y = .data[[Variable]])) +
+        geom_violin(aes(fill=fSpecies)) +
+        #geom_point(aes(color = fSeason))  +
+        geom_jitter(aes(color = fSeason)) + 
+        scale_color_manual(values=col.Palette$col.Palette.Season) +
+        scale_fill_manual(values= ggplot2::alpha(col.Palette$col.Palette.Species, 0.4)) 
+       p <- p + atheme +
+        theme(
+          panel.background = element_rect(fill='transparent'), #transparent panel bg
+          plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+          ) +
+        theme(axis.title.x.bottom =  element_text(color="grey13"), 
+          strip.text = element_text(color = "black", face= "bold")) +
+        theme(
+          legend.title=element_text(size=9), 
+          legend.text=element_text(size=9)) +
+        theme(
+          panel.grid.major = element_line(colour = "white"), 
+          panel.grid.minor = element_line(colour = "white"))
+  
+        
+        p_adj <- sigminer::get_adj_p(adiv  %>%
+                  left_join(SAMDF16S), .col = Variable, .grp = "Species", method = "wilcox.test",
+                  p.adjust.method ="holm")
+        
+        trial <- adiv %>%
+          left_join(SAMDF16S)
+        upper.y <- max(trial[[Variable]])+(0.1*max(trial[[Variable]]))
+        
+         p_adj$y.position[1] <- max(trial[[Variable]])-(0.05*max(trial[[Variable]]))
+         p_adj$y.position[2] <- max(trial[[Variable]])+(0.05*max(trial[[Variable]]))
+         p_adj$y.position[3] <- max(trial[[Variable]])+(0*max(trial[[Variable]]))
+
+        p <- p + stat_pvalue_manual(p_adj, label = "p.signif", bracket.size = 0.5, #hide.ns =TRUE,
+                  tip.length=0.02, label.size=4) 
+        p <- p + stat_compare_means(method = "kruskal.test", label.y = upper.y) + stat_n_text(size = 3)
+      
+    prow <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+    alphadiv_violin_plot<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.05, 0.98)) #title, 
+    plot(alphadiv_violin_plot)
+    ggsave(alphadiv_violin_plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 4,
+    height = 4)
+    }
+}
+
+```
+
+#### 5.3.1.2 AlphaDiv
+
+```{r, message=FALSE, warning=FALSE, include=TRUE}
+###################
+#Variable Violin#
+###################
+alphadiv_violin <- list()
+for (Dataset in names(alphadiv_list)[grepl("adiv", names(alphadiv_list))]) {
+     require(plyr)
+     require(ggrepel) 
+     require(cowplot)
+     require(EnvStats)
+
+    Variables <- c("Observed","Chao1.Chao1","Shannon", "InvSimpson")
+    Datasetname <- sub("adiv_", "", Dataset)
+    
+    adiv <- alphadiv_list[[Dataset]]
+    
+    for (ii in Variables) {
+      alphadiv_violin_length <- length(alphadiv_violin)
+      FILENAME    <- paste(paste(save_name, Type, Datasetname, ii, "Violin", sep="_"),".png", sep="")
+    
+      ggg     <- paste(ii) 
+
+      adiv$LOC <- factor(adiv$LOC, levels=LOCOrder)
+    
+      p <- ggplot(adiv, aes(x=LOC,y=adiv[[ii]], colour=LOC)) +
+        #geom_boxplot(aes(fill=LOC)) + atheme + 
+        geom_violin(aes(fill=LOC)) + 
+        geom_jitter(aes(color = LOC)) + 
+      
+      scale_color_manual(values= ggplot2::alpha(col.Palette$col.Palette.LOC, 1)) +    
+      scale_fill_manual(values= ggplot2::alpha(col.Palette$col.Palette.LOC, 0.4)) +
+      #geom_text_repel(aes(label = SampleID), data = adiv,   size=2.5)  +
+      facet_grid(. ~ factor(Season, levels=SeasonOrder), drop=TRUE,scale="free",space="free_x") +
+      labs(x = "", y = noquote(paste(ggg, " [", noquote(AlphaIndices[ii]), "]", sep = ""))) + #"")
+      #ggtitle(paste(gg,  ggg, "over all sampling sites and seasons (Summer, Winter, Spring,)"))
+      theme(legend.position = "none") +
+      guides(fill=guide_legend(title="Species")) +
+      #stat_n_text(size = 4, color = "grey20")+ #white
+      theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         #panel.grid.major = element_blank(),
+         #panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent') ) +
+      theme(
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.y.left = element_text(face = "bold"),
+        legend.title = element_text( size = 6),
+        legend.text = element_text(size = 6,face = "bold"),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9), 
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        strip.text.x = element_text(face = "bold"))
+      
+      
+      COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in% adiv$Season]
+      
+     g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.4)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+    
+      prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+      title <- ggdraw() + draw_label_themeRK(paste(Datasetname, ggg, "per Location"), element = "plot.title",x = 0.05, hjust = 0,     vjust = 0.5) #draw_label_themeRKwhite
+
+    alphadiv_violin_plot<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.05, 0.98)) #title, 
+
+    ggsave(alphadiv_violin_plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 5,
+    height = 2.8)
+    
+  alphadiv_violin[[alphadiv_violin_length+1]] <- alphadiv_violin_plot
+  names(alphadiv_violin)[[alphadiv_violin_length+1]] <- paste(Datasetname, ii, sep="_")
+    }
+}
+```
+
+
+```{r, message=FALSE,warning=FALSE, fig.width=15, fig.height=7}
+##############
+#Summary Plot#
+##############
+  cowplot::plot_grid(alphadiv_violin$OE_Observed, alphadiv_violin$GC_Observed, 
+                     labels = c("A", "B"), ncol = 1) -> part_1
+  cowplot::plot_grid(alphadiv_violin$OE_Shannon, alphadiv_violin$GC_Shannon, 
+                     labels = c("C", "D"), ncol = 1) -> part_2
+  cowplot::plot_grid(part_1, part_2, labels = c("", ""), rel_widths = c(1,1), ncol = 2) -> part_3
+  ggsave(part_3, filename = paste(paste(Species, Year, Season, "AlphaDiv_Violin", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 13,height = 6)
+part_3
+```
+
+#### 5.3.1.3 Physiology
+
+```{r, message=FALSE, warning=FALSE, include=FALSE, fig.width=10, fig.height=12}
+Metrics_violin <- list()
+for (Dataset in names(DataExploration_list)[grepl("OE|GC", names(DataExploration_list))]) {
+     require(plyr)
+     require(ggrepel) 
+     require(cowplot)
+     require(EnvStats)
+
+    Variables <- c("HSI", "GSI", "Length","FCF", "Age")
+    Datasetname <- Dataset
+    
+    model_df <- DataExploration_list[[Dataset]]$model_df
+    
+    Metrics_violin[[Dataset]] <- list()
+    for (ii in Variables) {
+      
+      Metrics_violin_length <- length(Metrics_violin[[Dataset]])
+      
+      FILENAME    <- paste(paste(save_name, Type, Datasetname, ii, "Violin", sep="_"),".png", sep="")
+    
+      ggg     <- paste(ii) 
+
+      model_df$fLOC <- factor(model_df$LOC, levels=LOCOrder)
+      model_df$fSeason <- factor(model_df$Season, levels=SeasonOrder)
+
+       
+      p <- ggplot(model_df, aes(x=fLOC,y=.data[[ii]], colour=fLOC)) +
+        #geom_boxplot(aes(fill=LOC)) + atheme + 
+        geom_violin(aes(fill=LOC)) + 
+      
+      scale_color_manual(values= ggplot2::alpha(col.Palette$col.Palette.LOC, 1)) +    
+      scale_fill_manual(values= ggplot2::alpha(col.Palette$col.Palette.LOC, 0.4)) +
+      geom_text_repel(aes(label = SampleID), data = model_df,   size=2.5)  +
+      facet_grid(. ~ fSeason, drop=TRUE,scale="free",space="free_x") +
+      labs(x = "", y = paste0(ggg, " [", noquote(Units[ii]), "]", sep = ""))+
+      #ggtitle(paste(gg,  ggg, "over all sampling sites and seasons (Summer, Winter, Spring,)"))
+      theme(legend.position = "none") +
+      guides(fill=guide_legend(title="Species")) +
+      stat_n_text(size = 4, color = "grey20")+ #white
+      theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         #panel.grid.major = element_blank(),
+         #panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent') ) +
+      theme(
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.y.left = element_text(face = "bold"),
+        legend.title = element_text( size = 6),
+        legend.text = element_text(size = 6,face = "bold"),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9), 
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(), 
+        strip.text.x = element_text(face = "bold"))
+      
+      
+      COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in% adiv$Season]
+      
+     g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.4)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+    
+      prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+
+      Metrics_violin_plot<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.05, 0.98)) #title, 
+      #plot(Metrics_violin_plot)
+      #ggsave(Metrics_violin_plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 8,
+      #height = 4)
+     Metrics_violin[[Dataset]][[Metrics_violin_length+1]] <- Metrics_violin_plot
+    names(Metrics_violin[[Dataset]])[[Metrics_violin_length+1]] <- ii
+    }
+  }
+  ##############
+  #Summary Plot#
+  ##############
+  for (Dataset in names(Metrics_violin)[grepl("OE|GC", names(Metrics_violin))]) {
+  
+  PLOTS1 <- Metrics_violin[[Dataset]][grepl("HSI|Length|FCF|Age|GSI", names(Metrics_violin[[Dataset]]))]
+  cowplot::plot_grid(cowplot::plot_grid(plotlist = PLOTS1, ncol = 1, labels = "auto")) -> part_2_a
+
+  ggsave(part_2_a, filename = paste(paste("Violin_Physiology", Dataset,
+          sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10,height = 12)
+  
+  plot(part_2_a)
+  }
+```
+
+#### 5.3.1.3 Physio line plot
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+
+Physio_line_list <- list()
+for (Datasetname in names(pslist$DataExploration_list)[grepl("OE|GC", names(pslist$DataExploration_list))]) {
+     require(plyr)
+     require(ggrepel) 
+     require(cowplot)
+     require(EnvStats)
+
+    Variables <- c("HSI", "SSI", "GSI", "FCF", "FillLevel", "Length", "Age", 
+                   "Observed","Shannon", "Chao1.Chao1", "InvSimpson")
+    model_df <- pslist$DataExploration_list[[Datasetname]]$model_df
+    Physio_line_list[[Datasetname]] <- list()
+    
+    for (ii in Variables) {
+      
+      FILENAME    <- paste(paste(save_name, "Physio", ii, "Area_plot", sep="_"),".png", sep="")
+    
+      ggg     <- paste(ii) 
+
+      model_df$fLOC <- factor(model_df$LOC, levels=LOCOrder)
+      model_df$fSeason <- factor(model_df$Season, levels=SeasonOrder)
+
+      
+      p <- model_df %>%
+        dplyr::group_by(Replicates) %>%
+        dplyr::summarize(
+          mean_value = mean(.data[[ii]]),
+          sd_value = sd(.data[[ii]])) %>%
+        left_join(model_df) %>%
+        ggplot(aes(x= fLOC, y= mean_value)) + 
+        geom_area(position = "identity", alpha = 0.1, size = 1.2, 
+                  aes(colour = fSeason, group=fSeason, fill =fSeason)) +
+        geom_errorbar(aes(ymin = mean_value - sd_value, ymax = mean_value + sd_value, colour = fSeason, alpha = 0.5), 
+                width = 0.2, size = 0.5) +
+        
+      scale_fill_manual(values = col.Palette$col.Palette.Season) +
+      scale_color_manual(values = col.Palette$col.Palette.Season) + 
+      theme(legend.position = "none") +
+      theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         #panel.grid.major = element_blank(),
+         #panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent') ) 
+      
+       if (ii %in% c("PO4", "pH", "SPM", "TOC")) {
+          p <- p + theme(axis.text.x = element_text(angle = 90, size=15,face = "bold"),
+          axis.title.x.bottom = element_blank(),
+          axis.title.y.left = element_text(size=15,face = "bold"),
+          strip.text.x = element_text(face = "bold"),
+          strip.text.x.bottom = element_text(size = 15,face = "bold"),
+          strip.text.y.left = element_text(size = 15,face = "bold"),
+          axis.text.x.bottom = element_text(face = "bold", angle = 45, hjust = 1),
+          axis.text.y.left = element_text(size = 15, face = "bold"),
+          legend.title = element_text( size = 9),
+          legend.text = element_text(size = 9,face = "bold"),
+          axis.title.x=element_blank(),
+          plot.subtitle = element_text(size = 9),
+          plot.caption = element_text(size = 9))
+       } else {
+          p <- p + theme(axis.text.x = element_text(angle = 90, size=15,face = "bold"),
+          axis.title.x.bottom = element_blank(),
+          axis.title.y.left = element_text(size=15,face = "bold"),
+          strip.text.x = element_text(face = "bold"),
+          strip.text.x.bottom = element_text(size = 15,face = "bold"),
+          strip.text.y.left = element_text(size = 15,face = "bold"),
+          axis.text.x.bottom = element_blank(),
+          axis.text.y.left = element_text(size = 15, face = "bold"),
+          legend.title = element_text( size = 9),
+          legend.text = element_text(size = 9,face = "bold"),
+          axis.title.x=element_blank(),
+          axis.ticks.x =element_blank(),
+          plot.subtitle = element_text(size = 9),
+          plot.caption = element_text(size = 9))
+      }
+      p <- p + labs(y = noquote(paste(ii, " [", noquote(Units[ii]), "]", sep = ""))) 
+
+      Physio_plot<- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+
+      #Abiotics_plot <- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.05, 0.98)) #title, 
+      
+      ggsave(Physio_plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 4,
+      height = 4)
+      Physio_line_list[[Datasetname]][[ii]] <- Physio_plot
+    }
+}
+
+    
+    
+  ##############
+  #Summary Plot#
+  ##############
+
+for (Datasetname in names(DataExploration_list)[grepl("OE|GC", names(DataExploration_list))]) {
+  PLOTS1 <- Physio_line_list[[Datasetname]][!grepl("SSI|Observed|Shannon|Chao1.Chao1|InvSimpson" , names(Physio_line_list[[Datasetname]]))]
+  cowplot::plot_grid(cowplot::plot_grid(plotlist = PLOTS1, ncol = 3)) -> part_2_a #labels = "auto"
+
+  ggsave(part_2_a, filename = paste(paste("Physio_Facet", Datasetname,
+          sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,height = 4)
+  
+  plot(part_2_a)
+  
+   PLOTS2 <- Physio_line_list[[Datasetname]][grepl("Observed|Shannon" , names(Physio_line_list[[Datasetname]]))]
+  cowplot::plot_grid(cowplot::plot_grid(plotlist = PLOTS2, ncol = 1)) -> part_3_a #labels = "auto"
+
+  ggsave(part_3_a, filename = paste(paste("Diversity_Facet", Datasetname,
+          sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 3,height = 4)
+  
+  plot(part_3_a)
+
+}
+
+```
+
+#-
+
+# Save Data
+
+```{r, message=FALSE, warning=FALSE}
+###########
+#Save Data#
+###########
+saveRDS(pslist, file.path(path_Output_16S, paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+```
+

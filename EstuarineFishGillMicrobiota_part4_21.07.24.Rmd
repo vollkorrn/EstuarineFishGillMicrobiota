@@ -1,0 +1,1859 @@
+---
+title: "EstuarineFishGillMicrobiota_part4_21.07.24"
+output: html_document
+date: "2024-07-21"
+---
+
+Biomarker discovery via multipratt gives some indications for taxa specific for fish, bacterioplankton and seasonal sampling. Overall it seems adviced to run several biomarker discovery techniques in parallel but in this variable dataset they give little insides and are more meant as a backup for the network analysis.
+
+# 1 Global Setup 
+
+## 1.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+GitClonePath <- "/Users/admin/Desktop/EstuarineFishGillMicrobiota"
+setwd(GitClonePath)
+
+path_Input_16S <- paste(GitClonePath, "Fish_Input_16S", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "Fish_Output_16S", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "Fish_Plots", sep="/")
+
+#Create Folder if not existing
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Output_16S")), dir.create(file.path(GitClonePath, "Fish_Output_16S")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Plots")), dir.create(file.path(GitClonePath, "Fish_Plots")), FALSE)
+
+```
+
+## 1.2 Packages
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::snapshot()
+#packrat::restore()
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "ComplexHeatmap",
+#   "Biostrings",
+#   "BiocParallel",
+#   "BiocNeighbors",
+#   "BiocFileCache",
+#   "BiocBaseUtils",
+#   "ShortRead",
+#   "SummarizedExperiment",
+#   "TreeSummarizedExperiment",
+#   "phyloseq",
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   ), force =T)
+
+#install.packages("remotes")
+#remotes::install_github("jfq3/ggordiplots")
+#install.packages("devtools")
+#install.packages("ggordiplots")
+#install.packages("RcmdrMisc")
+#install.packages("adespatial")
+#install.packages("ggVennDiagram")
+#install.packages("ggpicrust2")
+```
+
+## 1.3 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the Fish_Functions_19.07.24_Paper.Rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+
+#source_rmd("Fish_Functions_19.07.24_Paper.Rmd")
+source_rmd("/Users/admin/Desktop/EstuarineFishGillMicrobiota/Fish_Functions_19.07.24_Paper.Rmd")
+```
+
+## 1.4 Input Files
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Sequencing was performed in 3 runs and 2 batches, Batch1 was sequenced twice to increase sequencing depth
+#all runs were individually processed in the Dada2 pipeline and merged at the seqtab step
+#########################
+#Read DADA2 Output files#
+
+taxa  <-readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergemerge-Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergeseqtab.nochim.rds"))
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch2-26.07.23_470_Track_reads_through_pipeline.csv"))
+
+########################################################################
+#Import samplefile and filter for samples with successful 16S sequencing
+library(readxl)
+SAMDF16S<- as.data.frame(read_excel(file.path(path_Input_16S, "Fish_samplefile_24.03.2024.xlsx")))[,-1]
+write.table(SAMDF16S, file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+
+SAMDF16S <-read.table(file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+rownames(SAMDF16S) <- SAMDF16S$SampleID
+
+```
+
+
+## 1.5 Tutorials
+
+```{r, message=FALSE, warning=FALSE,  include=FALSE}
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+
+## 1.6 Setup Analysis
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Date of the Analysis for save-names#
+Date <- "19.07.2024"
+set.seed(123)
+Species    <- "OE_GC"
+Kind       <- "Fish"
+Tissue     <- "Gill"
+Year       <- "2021_2022"
+Season     <- "SU_AU_WI_SP"
+Type       <- "16S"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+#Differential Abundance Testing
+OutlineColor <- "grey20"
+
+#####################
+variable = Comparisons = "Replicates2"
+#####################
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand", "Twielenfleth","Muehlenberger Loch")
+SeasonOrder <-c("Summer_21", "Autumn_21", "Winter_22", "Spring_22")
+CruiseOrder<-c("Elbe_Summer_21", "Elbe_Autumn_21", "Elbe_Winter_22","Elbe_Spring_22")
+
+VariableOrder<-c(
+  "GCSU21BB", "GCSU21SS", "GCSU21TW", "GCSU21ML", 
+  "GCAU21BB", "GCAU21SS", "GCAU21TW", "GCAU21ML", 
+  "GCWI22BB", "GCWI22SS",             "GCWI22ML", 
+  "GCSP22BB", "GCSP22SS", "GCSP22TW", "GCSP22ML", 
+  
+  "OESU21MG", "OESU21BB", "OESU21SS", "OESU21TW", "OESU21ML", 
+  "OEAU21MG", "OEAU21BB", "OEAU21SS", "OEAU21TW", "OEAU21ML",
+  "OEWI22MG", "OEWI22BB", "OEWI22SS", "OEWI22TW", "OEWI22ML",
+  "OESP22MG", "OESP22BB", "OESP22SS", "OESP22TW", "OESP22ML",
+  
+  "WF")
+
+
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand","Twielenfleth", "Muehlenberger Loch")
+LOCOrder=c("MG-713", "BB-692", "SS-665","TF-651", "ML-633")
+save_name <- paste(Species,Year,Season,sep = "_")
+#Check your Output: 
+paste0(file.path(path_Output_16S, "DAT_"), save_name, ".RData")
+
+SAMDF16S$LOC<-ifelse(SAMDF16S$Loc == "Medem Grund", "MG-713",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "BB-692",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "SS-665",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "TF-651",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "ML-633", NA)))))
+
+SAMDF16S$"geographic.location..latitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "53.8363",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "53.8874",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "53.71442",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "53.60921",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "53.54907", NA)))))
+SAMDF16S$"geographic.location..longitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "8.88777",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "9.19429",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "9.46976",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "9.56536",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "9.82338", NA)))))
+
+SAMDF16S$Reps <- sub("^.{2}", "", SAMDF16S$Replicates2)
+SAMDF16S$Reps<- ifelse(SAMDF16S$Reps == "SU21MG", "SU 713",
+                            ifelse(SAMDF16S$Reps == "SU21BB", "SU 692",
+                            ifelse(SAMDF16S$Reps == "SU21SS", "SU 665",
+                            ifelse(SAMDF16S$Reps == "SU21TW", "SU 651",
+                            ifelse(SAMDF16S$Reps == "SU21ML", "SU 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "AU21MG", "AU 713",
+                            ifelse(SAMDF16S$Reps == "AU21BB", "AU 692",
+                            ifelse(SAMDF16S$Reps == "AU21SS", "AU 665",
+                            ifelse(SAMDF16S$Reps == "AU21TW", "AU 651",
+                            ifelse(SAMDF16S$Reps == "AU21ML", "AU 633", 
+                            
+                            ifelse(SAMDF16S$Reps == "WI22MG", "WI 713",
+                            ifelse(SAMDF16S$Reps == "WI22BB", "WI 692",
+                            ifelse(SAMDF16S$Reps == "WI22SS", "WI 665",
+                            ifelse(SAMDF16S$Reps == "WI22TW", "WI 651",
+                            ifelse(SAMDF16S$Reps == "WI22ML", "WI 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "SP22MG", "SP 713",
+                            ifelse(SAMDF16S$Reps == "SP22BB", "SP 692",
+                            ifelse(SAMDF16S$Reps == "SP22SS", "SP 665",
+                            ifelse(SAMDF16S$Reps == "SP22TW", "SP 651",
+                            ifelse(SAMDF16S$Reps == "SP22ML", "SP 633", 
+                                   "WF")))))
+                            )))))))))))))))
+
+     RepOrder <-c(
+    "SU 713", "SU 692","SU 665","SU 651","SU 633", 
+    "AU 713","AU 692","AU 665","AU 651","AU 633", 
+    "WI 713","WI 692","WI 665","WI 651","WI 633", 
+    "SP 713","SP 692","SP 665","SP 651","SP 633")
+     
+
+SAMDF16S$RepsSpecs <- paste(SAMDF16S$Species, SAMDF16S$Reps, sep=" ")
+SAMDF16S$RepsSpecs[SAMDF16S$RepsSpecs == "WF"] <- "WF"
+
+SAMDF16S$HSI     <- SAMDF16S$LiverWeight/SAMDF16S$Weight*100
+SAMDF16S$SSI     <- SAMDF16S$SpleenWeight/SAMDF16S$Weight*100
+SAMDF16S$GSI     <- SAMDF16S$GonadWeight/SAMDF16S$Weight*100
+SAMDF16S$FCF <-  (100*SAMDF16S$Weight/(SAMDF16S$Length/10)^3)
+SAMDF16S$FI  <- SAMDF16S$StomachContent/SAMDF16S$Weight*100
+ 
+SAMDF16S <- SAMDF16S %>% mutate(Maturity = case_when(
+                    (Species== "GC" & Length >= 10.5) ~ "Adult", 
+                    (Species== "GC" & Length < 10.5) ~ "Juvenile", 
+                    (Species== "OE" & Length >= 10) ~ "Adult", Length < 10 ~ "Juvenile"))
+
+SAMDF16S <- SAMDF16S %>% 
+  mutate(Age = case_when(
+    Species != "OE" ~ as.character(Age),  
+    (Species == "OE" & Length < 90) ~ "0", 
+    (Species == "OE" & Length <= 130) ~ "1", 
+    (Species == "OE" & Length <= 180) ~ "2", 
+    (Species == "OE" & Length <= 220) ~ "3", 
+    (Species == "OE" & Length > 220) ~ "4"
+  ))
+SAMDF16S$Age <- as.numeric(SAMDF16S$Age)
+
+SAMDF16S$fSeason <- factor(SAMDF16S$Season, level = SeasonOrder)
+SAMDF16S$fLOC <- factor(SAMDF16S$LOC, level = LOCOrder)
+SAMDF16S$Species <- substr(SAMDF16S$SampleID, 1, nchar(SAMDF16S$SampleID) - 9)
+SAMDF16S$fReplicates <- factor(SAMDF16S$Replicates, levels = VariableOrder[VariableOrder %in%                                                                               SAMDF16S$Replicates])
+
+SAMDF16S$fCruise <- factor(SAMDF16S$Cruise, level = CruiseOrder)
+
+#Adding in Elbe Estuary Public Monitoring Data from https://www.fgg-elbe.de/fachinformationssystem.html
+Mean_AbioticsFGG <- readRDS(file.path(path_Input_16S, "Mean_AbioticsFGG_16.02.24.rds"))
+names(Mean_AbioticsFGG)[names(Mean_AbioticsFGG) == "Season"] <- "Cruise"
+names(SAMDF16S)[names(SAMDF16S) == "O2"] <- "O2_catch"
+names(SAMDF16S)[names(SAMDF16S) == "O2Sat"] <- "O2Sat_catch"
+names(SAMDF16S)[names(SAMDF16S) == "pH"] <- "pH_catch"
+
+colnames(Mean_AbioticsFGG) <- sub("_mean", "",colnames(Mean_AbioticsFGG))
+SAMDF16S <- dplyr::left_join(SAMDF16S, Mean_AbioticsFGG)
+
+SSU_Samples <-c(
+#Ruffe
+#Summer21
+"GCSU21BBEB1", "GCSU21BBEB2", "GCSU21BBEB4", "GCSU21BBEB5",                              "GCSU21BBFL3",
+"GCSU21SSEB1", "GCSU21SSEB2", "GCSU21SSEB3", "GCSU21SSEB4", "GCSU21SSEB8","GCSU21SSFL1", "GCSU21SSFL3",
+"GCSU21TWEB1", "GCSU21TWEB2", "GCSU21TWEB3", "GCSU21TWEB4", "GCSU21TWFL1", "GCSU21TWFL2", "GCSU21TWFL3",
+"GCSU21MLEB1", "GCSU21MLEB2", "GCSU21MLEB3", "GCSU21MLEB5", "GCSU21MLEB6", "GCSU21MLFL1", "GCSU21MLFL2", "GCSU21MLFL3", "GCSU21MLFL6",
+
+#"GCSU21BBEB6" missing physiology
+#"GCSU21BBFL2" equal to water samples 
+
+#Autumn21
+"GCAU21BBEB1", "GCAU21BBEB2", "GCAU21BBEB3", "GCAU21BBFL1", "GCAU21BBFL2", "GCAU21BBFL3", "GCAU21BBFL4",
+"GCAU21SSEB1", "GCAU21SSEB3", "GCAU21SSEB5", "GCAU21SSEB7", "GCAU21SSFL1", "GCAU21SSFL3", "GCAU21SSFL5",
+"GCAU21TWEB1", "GCAU21TWFL1", "GCAU21TWFL2",
+"GCAU21MLEB1", "GCAU21MLEB2", "GCAU21MLEB3", "GCAU21MLFL1", "GCAU21MLFL3", "GCAU21MLFL5", "GCAU21MLFL7", 
+#Winter21
+"GCWI22BBEB1", "GCWI22BBFL1", "GCWI22BBFL2",
+"GCWI22SSEB1", "GCWI22SSEB2", "GCWI22SSEB3", "GCWI22SSFL1", "GCWI22SSFL2", 
+"GCWI22MLEB1", "GCWI22MLFL1", "GCWI22MLFL2",
+#Spring21
+"GCSP22BBEB1", "GCSP22BBEB3", "GCSP22BBEB5", "GCSP22BBEB7", "GCSP22BBEB9", "GCSP22BBFL1", "GCSP22BBFL2",
+"GCSP22SSEB1", "GCSP22SSEB3", "GCSP22SSEB5", "GCSP22SSEB7", "GCSP22SSFL1", "GCSP22SSFL3", "GCSP22SSFL5",
+"GCSP22TWEB1", "GCSP22TWFL1", "GCSP22TWFL2", "GCSP22TWFL3",   
+"GCSP22MLEB1", "GCSP22MLEB3", "GCSP22MLEB5", "GCSP22MLEB7", "GCSP22MLFL1", "GCSP22MLFL3", "GCSP22MLFL5",
+#Summer22 ML
+#"GCSU22MLEB1", "GCSU22MLEB2", "GCSU22MLEB3", "GCSU22MLEB4", "GCSU22MLEB5", "GCSU22MLEB6", "GCSU22MLEB7",  
+
+#Smelt
+"OESU21MGEB1", "OESU21MGEB4", "OESU21MGEB6", "OESU21MGEB8", "OESU21MGEB9", "OESU21MGFL2", "OESU21MGFL6",
+"OESU21BBEB5", "OESU21BBEB6", "OESU21BBEB7", "OESU21BBEB8", "OESU21BBEB9", "OESU21BBFL1", "OESU21BBFL4",
+"OESU21SSEB6", "OESU21SSEB7", "OESU21SSEB8", "OESU21SSEB9", "OESU21SSFL1", "OESU21SSFL2", "OESU21SSFL6",
+"OESU21TWEB2", "OESU21TWEB3", "OESU21TWEB4", "OESU21TWFL1", "OESU21TWFL3", "OESU21TWFL5", "OESU21TWFL7",
+"OESU21MLEB1", "OESU21MLEB2", "OESU21MLEB3", "OESU21MLFL1", "OESU21MLFL2",
+
+"OEAU21MGEB1", "OEAU21MGEB3", "OEAU21MGEB5", "OEAU21MGEB7", "OEAU21MGFL1", "OEAU21MGFL3", "OEAU21MGFL5",
+"OEAU21BBEB1", "OEAU21BBEB3", "OEAU21BBEB6", "OEAU21BBEB7", "OEAU21BBFL2", "OEAU21BBFL4", "OEAU21BBFL6",
+"OEAU21SSEB1", "OEAU21SSEB3", "OEAU21SSEB5", "OEAU21SSEB8", "OEAU21SSFL1", "OEAU21SSFL3", "OEAU21SSFL6",
+"OEAU21TWEB1", "OEAU21TWEB3", "OEAU21TWEB5", "OEAU21TWEB7", "OEAU21TWFL1", "OEAU21TWFL3", "OEAU21TWFL7",
+"OEAU21MLEB1", "OEAU21MLEB3", "OEAU21MLEB5", "OEAU21MLEB7", "OEAU21MLFL1", "OEAU21MLFL3", "OEAU21MLFL7",
+
+"OEWI22BBEB1", "OEWI22BBEB4", "OEWI22BBEB5", "OEWI22BBEB7", "OEWI22BBFL1", "OEWI22BBFL3", "OEWI22BBFL7", 
+"OEWI22MGEB1", "OEWI22MGEB3", "OEWI22MGEB5", "OEWI22MGEB9", "OEWI22MGFL1", "OEWI22MGFL3", "OEWI22MGFL7",
+"OEWI22SSEB1", "OEWI22SSEB5", "OEWI22SSEB7", "OEWI22SSEB9", "OEWI22SSFL1", "OEWI22SSFL5", "OEWI22SSFL8",  
+"OEWI22TWEB1", "OEWI22TWEB2", "OEWI22TWEB3", "OEWI22TWEB4", "OEWI22TWEB5", "OEWI22TWEB7", "OEWI22TWEB9",
+"OEWI22MLEB1", "OEWI22MLEB3", "OEWI22MLEB7", "OEWI22MLEB9", "OEWI22MLFL1", "OEWI22MLFL5", "OEWI22MLFL7", 
+
+"OESP22MGEB1", "OESP22MGEB3", "OESP22MGEB5", "OESP22MGEB7", "OESP22MGFL1", "OESP22MGFL3", "OESP22MGFL5",
+"OESP22BBEB1", "OESP22BBEB3", "OESP22BBEB7", "OESP22BBEB8", "OESP22BBFL2", "OESP22BBFL3", "OESP22BBFL5",
+"OESP22SSEB1", "OESP22SSEB2", "OESP22SSEB3", "OESP22SSEB4", "OESP22SSFL1", "OESP22SSFL3", "OESP22SSFL5",
+"OESP22TWEB1", "OESP22TWEB2", "OESP22TWEB5", "OESP22TWFL1", "OESP22TWFL3", "OESP22TWFL5", "OESP22TWFL7",
+"OESP22MLEB1", "OESP22MLEB2", "OESP22MLEB3", "OESP22MLFL1", "OESP22MLFL2", "OESP22MLFL3", "OESP22MLFL4",
+
+#"OESU22MLEB1", "OESU22MLEB2", "OESU22MLEB3", "OESU22MLEB4", 
+
+"WFSU21MGEB",
+"WFSU21BBEB",
+"WFSU21SSFL",
+"WFSU21MLFL", 
+
+"WFAU21TWEB",
+
+"WFWI22MGEB", "WFWI22MGFL",
+"WFWI22BBEB", "WFWI22BBFL",
+"WFWI22MLFL", "WFWI22SSFL", 
+
+"WFSP22MGEB", "WFSP22MGFL",
+"WFSP22BBEB", "WFSP22BBFL", 
+"WFSP22SSEB", "WFSP22SSFL",
+"WFSP22MLEB", "WFSP22MLFL"
+
+#"WFSU22MLEB"
+)
+      
+SAMDF16S$Species[SAMDF16S$Species == "W"] <- "WF"
+SAMDF16S$fSpecies <- factor(SAMDF16S$Species, levels=c("WF", "OE", "GC"))
+
+
+###########################################################################################################
+#For ENA_Sample Submission! Open in Numbers or Libre office, stupid Excel will destroy geo and other data!#
+###########################################################################################################
+  write.table(SAMDF16S, paste0(file.path(path_Output_16S, paste(paste(save_name,
+            paste("SAMDF16S", sep=""),sep="_"),".txt", sep=""))), dec = ".", sep = "\t")
+
+pslistraw <- readRDS(file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+pslist <- readRDS(file.path(path_Output_16S,paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+colored_taxonomy_Fish <- pslist$Optics$colored_taxonomy_Fish
+```
+
+#-
+
+# 7 Bacterial Biomarkers
+
+## 7.0 Abundance Heatmap 
+
+```{r, message=FALSE, warning=FALSE, fig.width=14, fig.height=14}
+################################
+#BacteriaHeatPlot Visualization# Fish
+################################
+    require(phyloseq)
+    require(ggplot2)
+    require(tidyverse)
+    require(cowplot)
+  rowclusternum        <- 6
+  columnclusternum     <- 7
+  FILENAME    <- paste(paste("Cluster_Heatmap_Species_ALL", Type, sep="_"), ".png", sep="")
+  TITLE       <- draw_label_themeRKwhite(paste(""), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+ 
+  #CLR         <-  as.data.frame(SummarizedExperiment::assay(pslist$TSEc.l.r_SSU))
+  CoreSet <- "Fish"
+  
+  ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+  ps_clr <- microbiome::transform(ps, "clr")
+  CLR <- as.data.frame(SummarizedExperiment::assay(mia::makeTreeSummarizedExperimentFromPhyloseq(ps_clr)))
+  
+  SampleOrder <- SSU_Samples
+
+  SAMDF       <- SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps)),]
+  WIDTH = length(SAMDF$SampleID) *0.04
+  HEIGHT = 10
+   
+  IndicatorSpecies_HeatPlot <- BacteriaHeatPlotRK7_withCore(OmicsData = CLR, Species = Species, genes_of_interest = rownames(CLR), Samples = colnames(CLR), SAMDF = SAMDF,  TITLE = TITLE, filename= FILENAME, OutlineColor=OutlineColor,  SHOW_ROW_NAMES = T, SHOW_ROW_NAMES_ALL = F,  ZScore =  F) 
+```
+
+
+## 7.1 Indicator species/multipratt
+
+https://cran.r-project.org/web/packages/indicspecies/vignettes/IndicatorSpeciesAnalysis.html
+
+```{r, message=FALSE, warning=FALSE}
+#install.packages("indicspecies")
+IndicatorSpecies_list <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_SSU|ps_GC|ps_OE|ps_Fish", names(pslist)[!grepl("WF", names(pslist))])]) {
+  
+    require(indicspecies)
+    require(phyloseq)
+    require(ggplot2)
+    require(tidyverse)
+    require(cowplot)
+    Datasetname <- sub("ps_", "", Dataset)
+    IndicatorSpecies_list_length <- length(IndicatorSpecies_list)
+  
+    if (Datasetname %in% c("Fish")) {
+      ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC)
+      Comparison  <- "Species"
+      Interested_Comparisons <- c(
+        "GC", 
+        "OE"
+      )
+    } else if (Datasetname %in% c("SSU")) {
+      ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+      #ps <- filter_taxa(ps, function (x) {sum(x) > 50}, prune=TRUE)
+      Comparison  <- "Kind"
+      Interested_Comparisons <- c(
+        "Fish",
+        "Water"
+        )
+    } else if (Datasetname %in% c("OE", "GC")) {
+      ps <- pslist[[Dataset]]
+      Comparison  <- "Season"
+      Interested_Comparisons <- c(
+      "Spring_22",
+      "Summer_21",
+      "Winter_22",
+      "Autumn_21"
+      )
+    
+    }
+    
+    result <- indicspecies::multipatt(
+      otu_table(ps), 
+      sample_data(ps)[[paste(Comparison)]], 
+      #func = "IndVal.g", 
+      control = how(nperm = 999))
+  
+    df_list <- split(result$sign, result$sign$index)
+    Groups <- as.vector(dimnames(result$comb))[[2]]
+    
+    for (i in seq_along(names(df_list))) {
+      names(df_list)[[i]] <- Groups[i]}
+
+    filtered_df_list <- list()
+
+    for (group_name in names(df_list)[-length(df_list)]) {
+      filtered_df <- df_list[[group_name]]
+      filtered_df <- filtered_df[filtered_df$p.value < 0.05,]
+      filtered_df_list[[group_name]] <- filtered_df}
+    
+    filtered_df_list[[names(df_list)[length(df_list)]]] <- df_list[[length(df_list)]]
+
+    ordered_df_list <- lapply(filtered_df_list, function(df) df[order(df$stat, decreasing = T), ])
+    #cat(paste(shQuote(names(ordered_df_list), type="cmd"), collapse=", ")) 
+    
+    ordered_df_list_intest <- ordered_df_list[names(ordered_df_list) %in% Interested_Comparisons]
+    ordered_df_list_intest_0.7 <-list()
+    
+    for (group_name in names(ordered_df_list_intest)) {
+      filtered_df <- df_list[[group_name]]
+      filtered_df <- filtered_df[filtered_df$stat > 0.7, ]
+      ordered_df_list_intest_0.7[[group_name]] <- filtered_df
+    }
+    
+    print(Datasetname)
+    lapply(ordered_df_list_intest, dim)
+    lapply(ordered_df_list_intest_0.7, dim)
+
+    IndicatorSpecies_list[[IndicatorSpecies_list_length+1]] <- ordered_df_list_intest_0.7
+    names(IndicatorSpecies_list)[[IndicatorSpecies_list_length+1]] <- paste(Datasetname, Comparison, sep="_")
+}
+
+
+
+pslist$IndicatorSpecies_list <- IndicatorSpecies_list
+
+ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+
+SSU_taxa <- rownames(tax_table(ps))
+SSU_taxa <- setdiff(SSU_taxa, c(rownames(IndicatorSpecies_list$SSU_Kind$Fish), rownames(IndicatorSpecies_list$SSU_Kind$Water)))
+pslist$ps_WF
+
+
+
+
+
+##############
+#Add Taxonomy#
+##############
+  InDat_list_Species <- IndicatorSpecies_list$Fish_Species
+  for (IndDat in names(InDat_list_Species)) {
+    InDat_list_Species[[IndDat]]$ASV <- rownames(InDat_list_Species[[IndDat]])
+    InDat_list_Species[[IndDat]] <- left_join(InDat_list_Species[[IndDat]],
+    as.data.frame(tax_table(merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF))) %>% 
+      mutate(ASV = rownames(.)))}
+
+  InDat_list_Kind <- IndicatorSpecies_list$SSU_Kind
+  for (IndDat in names(InDat_list_Kind)) {
+    InDat_list_Kind[[IndDat]]$ASV <- rownames(InDat_list_Kind[[IndDat]])
+    InDat_list_Kind[[IndDat]] <- left_join(InDat_list_Kind[[IndDat]],
+    as.data.frame(tax_table(merge_phyloseq(pslist$ps_Fish, pslist$ps_WF))) %>% 
+      mutate(ASV = rownames(.)))}
+
+  
+#############################
+#Extract Bacterial Biomarker#
+#############################
+  lapply(InDat_list_Species, dim)
+  CompsOfInterest_Fish<- c(
+    "GC","OE", "GC+OE")
+  IndicatorTaxa_Fish <- unique(as.vector(unlist(lapply(InDat_list_Species[
+                            names(InDat_list_Species) %in% CompsOfInterest_Fish],function(df) df[["ASV"]]))))
+  
+  CompsOfInterest_Water<- c("Water")
+  IndicatorTaxa_Water <- unique(as.vector(unlist(lapply(InDat_list_Kind[
+                            names(InDat_list_Kind) %in% CompsOfInterest_Water],function(df) df[["ASV"]]))))
+  
+  CompsOfInterest_Season <- c(
+      "Spring_22", 
+      "Summer_21",
+      "Winter_22",
+      "Autumn_21")
+  InDat_list_OE_Season <- IndicatorSpecies_list$OE_Season
+      for (IndDat in names(InDat_list_OE_Season )) {
+      InDat_list_OE_Season [[IndDat]]$ASV <- rownames(InDat_list_OE_Season [[IndDat]])
+      InDat_list_OE_Season [[IndDat]] <- left_join(InDat_list_OE_Season [[IndDat]],
+      as.data.frame(tax_table(pslist$ps_OE)) %>% mutate(ASV = rownames(.)))}
+  IndicatorTaxa_OE_Season <- unique(as.vector(unlist(lapply(InDat_list_OE_Season[
+                            names(InDat_list_OE_Season) %in% CompsOfInterest_Season],function(df) df[["ASV"]])
+                            )))                            
+  InDat_list_GC_Season <- IndicatorSpecies_list$GC_Season
+      for (IndDat in names(InDat_list_GC_Season )) {
+      InDat_list_GC_Season [[IndDat]]$ASV <- rownames(InDat_list_GC_Season [[IndDat]])
+      InDat_list_GC_Season [[IndDat]] <- left_join(InDat_list_GC_Season [[IndDat]],
+      as.data.frame(tax_table(pslist$ps_GC)) %>% mutate(ASV = rownames(.)))}
+  IndicatorTaxa_GC_Season <- unique(as.vector(unlist(lapply(InDat_list_GC_Season[
+                            names(InDat_list_GC_Season) %in% CompsOfInterest_Season],function(df) df[["ASV"]])
+                            )))    
+  
+  IndicatorTaxa_list <- list(
+    "IndicatorTaxa_Fish" = IndicatorTaxa_Fish, 
+    "IndicatorTaxa_Water" = IndicatorTaxa_Water, 
+    "IndicatorTaxa_OE_Season" =IndicatorTaxa_OE_Season, 
+    "IndicatorTaxa_GC_Season" =IndicatorTaxa_GC_Season
+  )
+    
+  
+
+################################
+#BacteriaHeatPlot Visualization# OE
+################################
+  rowclusternum        <- 4
+  columnclusternum     <- 4
+  FILENAME    <- paste(paste("Indicator_Species_OE_Season", Type, "LCF0", sep="_"), ".png", sep="")
+  TITLE       <- draw_label_themeRKwhite(paste(""), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+ 
+  #CLR         <-  as.data.frame(SummarizedExperiment::assay(pslist$TSEc.l.r_SSU))
+  CoreSet <- "OE"
+  
+  ps <- pslist$ps_OE
+  ps_clr <- microbiome::transform(ps, "clr")
+  CLR <- as.data.frame(SummarizedExperiment::assay(mia::makeTreeSummarizedExperimentFromPhyloseq(ps_clr)))
+  
+  SampleOrder <- SSU_Samples
+
+  SAMDF       <- SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps)),]
+  WIDTH = 4 + length(SAMDF$SampleID) *0.04
+  HEIGHT = 5
+   
+  #IndicatorTaxa_Reps <- unique(as.vector(unlist(lapply(InDat_list[
+  #                          names(InDat_list) %in% CompsOfInterest],function(df) df[["ASV"]]))))
+
+  IndicatorTaxa <- IndicatorTaxa_list$IndicatorTaxa_OE_Season
+
+  IndicatorSpecies_HeatPlot <- BacteriaHeatPlotRK7_withCore(OmicsData = CLR, Species = CoreSet, genes_of_interest = IndicatorTaxa, Samples = colnames(CLR), SAMDF = SAMDF,  TITLE = TITLE, filename= FILENAME, OutlineColor=OutlineColor,  SHOW_ROW_NAMES = T, SHOW_ROW_NAMES_ALL = F,  ZScore =  F) 
+  
+  
+################################
+#BacteriaHeatPlot Visualization# GC
+################################
+  rowclusternum        <- 4
+  columnclusternum     <- 4
+  FILENAME    <- paste(paste("Indicator_Species_GC_Season", Type, "LCF0", sep="_"), ".png", sep="")
+  TITLE       <- draw_label_themeRKwhite(paste(""), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+ 
+  #CLR         <-  as.data.frame(SummarizedExperiment::assay(pslist$TSEc.l.r_SSU))
+  CoreSet <- "GC"
+  
+  ps <- pslist$ps_GC
+  ps_clr <- microbiome::transform(ps, "clr")
+  CLR <- as.data.frame(SummarizedExperiment::assay(mia::makeTreeSummarizedExperimentFromPhyloseq(ps_clr)))
+  
+  SampleOrder <- SSU_Samples
+
+  SAMDF       <- SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps)),]
+  WIDTH = 6 + length(SAMDF$SampleID) *0.04
+  HEIGHT = 5
+   
+  #IndicatorTaxa_Reps <- unique(as.vector(unlist(lapply(InDat_list[
+  #                          names(InDat_list) %in% CompsOfInterest],function(df) df[["ASV"]]))))
+
+  IndicatorTaxa <- IndicatorTaxa_list$IndicatorTaxa_GC_Season
+
+  IndicatorSpecies_HeatPlot <- BacteriaHeatPlotRK7_withCore(OmicsData = CLR, Species = CoreSet, genes_of_interest = IndicatorTaxa, Samples = colnames(CLR), SAMDF = SAMDF,  TITLE = TITLE, filename= FILENAME, OutlineColor=OutlineColor,  SHOW_ROW_NAMES = T, SHOW_ROW_NAMES_ALL = F,  ZScore =  F) 
+  
+
+
+```
+
+### 7.1.1 Extract 
+
+```{r, message=FALSE, warning=FALSE}
+IndicSpecies_list <- list()
+
+for (Dataset in names(IndicatorSpecies_list)) {
+  
+    Datasetname <- sub("_Season|_Species|_Kind", "", Dataset)
+  
+    if (Datasetname %in% c("Fish")) {
+      ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC)
+      Comparison  <- "Species"
+      Interested_Comparisons <- c(
+        "GC", 
+        "OE"
+      )
+    } else if (Datasetname %in% c("SSU")) {
+      ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+      #ps <- filter_taxa(ps, function (x) {sum(x) > 50}, prune=TRUE)
+      Comparison  <- "Kind"
+      Interested_Comparisons <- c(
+        "Fish",
+        "Water"
+        )
+    } else if (Datasetname %in% c("OE", "GC")) {
+      ps <- pslist[[paste("ps",Datasetname, sep="_")]]
+      Comparison  <- "Season"
+      Interested_Comparisons <- c(
+      "Spring_22", 
+      "Summer_21",
+      "Winter_22",
+      "Autumn_21"
+      )
+    }
+
+    for (IndDat in names(IndicatorSpecies_list[[Dataset]])) {
+      
+      df <- IndicatorSpecies_list[[Dataset]][[IndDat]]
+      
+      ps_sub <- prune_samples(sample_names(ps)[sample_data(ps)[[Comparison]] == IndDat], ps)
+      
+      df <- df %>% 
+        mutate(ASV = rownames(.)) %>% 
+        left_join(
+          as.data.frame(tax_table(ps_sub)) %>% 
+          mutate(ASV = rownames(.))
+          ) %>% 
+        left_join(as.data.frame(t(otu_table(ps_sub %>%
+          transform_sample_counts(function(x) {x/sum(x)*100})))) %>% 
+          dplyr::mutate(ASV = rownames(.))
+          ) %>% 
+        left_join(
+          as.data.frame(t(otu_table(ps_sub %>%
+          transform_sample_counts(function(x) {x/sum(x)*100})))) %>% 
+          dplyr::mutate(ASVmeans = rowMeans(.)) %>%
+          dplyr::mutate(ASV = rownames(.)) %>% 
+          dplyr::select(ASV, ASVmeans)
+          ) %>% 
+        dplyr::arrange(desc(ASVmeans))  %>%
+        dplyr::select(ASVmeans, everything())
+    
+      rownames(df) <- df$ASV
+        
+      write.csv2(df, file.path(path_Output_16S,paste(paste(save_name,  "IndicatorSpecies", Datasetname , Comparison, IndDat, Date, sep="_"), ".csv", sep="")))
+  }
+}
+
+```
+
+### 7.1.2 Barplots
+
+Indicator taxa are very rare 
+
+```{r, message=FALSE, warning=FALSE}
+############
+#Multipratt#
+############
+GroupOfInterest <- na.omit(unique(rownames(IndicatorSpecies_list$OE_Season$Autumn_21)))
+AddName <- "multipratt_OE_Autumn21"
+TaxLevel <- "ASV"
+
+flipped <- T
+for (Dataset in names(pslist)[grepl("ps_GCWF|ps_OEWF", names(pslist))]) {
+  
+  require(plyr); require(dplyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    Datasetname <- sub("ps_", "", Dataset)
+    
+  
+    # GroupOfInterest_OE <- na.omit(unique(WGCNA_list[["OE"]]$SSUWGCNAlist[["SSU7"]]$ASV))
+    # GroupOfInterest_GC <- na.omit(unique(WGCNA_list[["GC"]]$SSUWGCNAlist[["SSU2"]]$ASV))
+    # print(paste(sum(GroupOfInterest_OE %in% GroupOfInterest_GC)/length(GroupOfInterest_OE)*100, "% of OE Module SSU7 are in GC Module SSU2"))
+    # 
+    # GroupOfInterest <- c(GroupOfInterest_OE, GroupOfInterest_GC)
+    # #GroupOfInterest <- sub(".*:", "", GroupOfInterest)  
+    # GroupOfInterest <-unique(GroupOfInterest)
+    
+    ps <- pslist[[Dataset]] 
+
+
+    FILENAME    <- paste(paste(save_name, "Alpha_BarPlot_WF", AddName, Datasetname,  sep="_"), ".png", sep="")
+    
+    if (Datasetname %in% c("GC", "OE")) {
+      WIDTH <- 10 + length(sample_names(pslist[[Dataset]])) *0.12
+      HEIGHT <- 10 #length(sample_names(pslist[[Dataset]])) *0.08
+    } else if (Datasetname %in% c("WF")) {
+      WIDTH <-  5 + length(sample_names(pslist[[Dataset]])) *0.12
+       HEIGHT <- 10 #length(sample_names(pslist[[Dataset]])) *0.08
+    } else {
+     WIDTH <-  10 + length(sample_names(pslist[[Dataset]])) *0.12
+      HEIGHT <- 10 #length(sample_names(pslist[[Dataset]])) *0.08
+    }
+    
+  
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- ps %>%
+    #tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    #filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+  
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    #ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    # phylum_abundance <- ps_alpha_barplot %>%
+    #   dplyr::group_by(.data[[TaxLevel]]) %>%
+    #   dplyr::summarise(TotalAbundance = sum(Abundance))
+    # ordered_levels <- phylum_abundance %>%
+    #   dplyr::arrange(desc(TotalAbundance)) %>%
+    #   pull(.data[[TaxLevel]])
+    #   
+    # ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+
+    ps_alpha_barplot$SampleID <- factor(ps_alpha_barplot$SampleID, levels = 
+                                          SSU_Samples[SSU_Samples %in% sample_names(pslist[[Dataset]])])
+  
+    
+    SSU_Samples[SSU_Samples %in% sample_names(pslist[[Dataset]])]
+    
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,]
+    #df <- df[df$OTU %in% GroupOfInterest,]
+    df$Abundance[!(df$OTU %in% GroupOfInterest)] <- 0
+    
+    phylum_abundance <- df %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+    ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+      
+    df$Taxa <- factor(df[[TaxLevel]], levels = ordered_levels)
+    
+    Alpha_Diversity_df <- df
+    Alpha_Diversity_df$Colors <- NA
+    Alpha_Diversity_df$Reps <-  factor(Alpha_Diversity_df$Reps, levels = RepOrder[RepOrder %in% Alpha_Diversity_df$Reps])
+    
+    #################################
+    #Update to colored_taxonomy_Fish#
+    #################################
+
+    taxa_levels <- c("Genus", "Family", "Order", "Class", "Phylum")
+    taxa_level2 <- c("Taxa", "Phylum2")
+
+    Alpha_Diversity_df$Color <- "grey"
+
+  # Loop through each row of Alpha_Diversity_df
+  # for (i in 1:nrow(Alpha_Diversity_df)) {
+  #   matching_color <- NA  # Initialize matching color to NA
+  #   # Loop through each taxonomic level
+  #   for (level in taxa_levels) {
+  #   matching_row <- colored_taxonomy_Fish[colored_taxonomy_Fish$Taxa %in%
+  #                                           Alpha_Diversity_df[[level]][i], ]
+  #   # If there's a match, update matching_color and exit the loop
+  #   if (nrow(matching_row) > 0) {
+  #     matching_color <- matching_row$Color
+  #     break
+  #   }
+  # }
+  # # If there's no match at any level, try matching without numbers
+  # if (is.na(matching_color)) {
+  #   matching_row <- colored_taxonomy_Fish[gsub("\\d", "", colored_taxonomy_Fish$Phylum2) %in%
+  #                                           Alpha_Diversity_df[["Phylum"]][i], ]
+  #   if (nrow(matching_row) > 0) {
+  #     matching_color <- matching_row$Color
+  #   }
+  # }
+  # # Assign the matching color to the corresponding row in Alpha_Diversity_df
+  # Alpha_Diversity_df$Color[i] <- matching_color
+  # }
+    
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+    color_mapping[["Candidatus Megaira"]] <- "purple"
+    color_mapping[["Acinetobacter.lwoffii"]] <- "#996600"
+    color_mapping[["Acinetobacter.johnsonii"]] <- "#663300"
+    color_mapping[["Shewanella"]] <- "#FF3366"
+    color_mapping[["Shewanella.baltica"]] <- "#FF0099"
+    color_mapping[["Shewanella.putrefaciens"]] <-"#FF0066"
+    color_mapping[["Photobacterium"]] <- "#FFF000"
+    color_mapping[["Aeromonas"]] <- "#FFCC00"
+    
+
+    levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% head(unique(sub(".*:", "", GroupOfInterest)), 34)  ] <-
+      "Other"
+
+    if (flipped == FALSE) {
+      if (Datasetname == "WF") {
+        p <- ggplot(Alpha_Diversity_df, 
+          aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+          geom_bar(stat = "identity") +
+          facet_grid(. ~ factor(Season, levels = SeasonOrder), drop = TRUE, scale = "free", 
+                     space = "free_x")
+        COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in%
+                                              unique(sample_data(ps)$Season)]
+      } else {
+       p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_y")
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%                                    unique(sample_data(ps)$Reps)]
+      }
+      p <- p + 
+        atheme +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+        ylim(0, 60) +
+  
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+    
+        Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+        ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300,
+               width = WIDTH, height = 6)
+        
+    } else if (flipped == TRUE) {
+      # New facet label names for supp variable
+    
+      COL <- col.Palette$col.Palette.Reps[names(col.Palette$col.Palette.Reps) %in%                                    unique(sample_data(ps)$Reps)]
+      
+      Short.labs <- gsub("[^0-9]", "", Alpha_Diversity_df$Reps)
+      names(Short.labs) <- Alpha_Diversity_df$Reps
+
+      
+      p <- ggplot(Alpha_Diversity_df, aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            #facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_x", switch = "y")
+        facet_grid(rows = vars(Reps), drop = TRUE, scale = "free", space = "free_x", switch = "y", 
+              labeller = labeller(Reps = Short.labs)) 
+      
+      p <- p + 
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") + #atheme+
+        scale_fill_manual(values = color_mapping) +
+        ylim(0, 60) +
+            theme(axis.title.y=element_blank(),
+            axis.text.y=element_blank(),
+            axis.ticks.y=element_blank()) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13", size=15, face ="bold"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 15, face = "bold", angle = 45, hjust = 1),
+        #strip.text.y.left = element_text(size = 9,face = "bold"), 
+        #axis.title.y.left = element_text(size=12,face = "bold")
+        ) +
+        theme(legend.position = "none")
+      
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-l', g$layout$name))
+        fills <- alpha(COL, 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 2.7, height = HEIGHT)
+    
+    }
+}
+
+```
+
+
+
+### 7.1.3 Indicator LOC
+
+https://cran.r-project.org/web/packages/indicspecies/vignettes/IndicatorSpeciesAnalysis.html
+
+```{r}
+#install.packages("indicspecies")
+IndicatorSpecies_Reps_list <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]) {
+  
+    require(indicspecies)
+    Datasetname <- sub("ps_", "", Dataset)
+    IndicatorSpecies_Reps_list_length <- length(IndicatorSpecies_Reps_list)
+  
+  
+      ps <- pslist[[Dataset]]
+      #Comparison  <- "Reps"
+      #Interested_Comparisons <- RepOrder[RepOrder %in% sample_data(ps)$Reps]
+      
+      Comparison  <- "LOC"
+      Interested_Comparisons <- LOCOrder[LOCOrder %in% sample_data(ps)$LOC]
+    
+    result <- indicspecies::multipatt(
+      otu_table(ps), 
+      sample_data(ps)[[paste(Comparison)]], 
+      #func = "IndVal.g", 
+      control = how(nperm = 999))
+  
+    df_list <- split(result$sign, result$sign$index)
+    Groups <- as.vector(dimnames(result$comb))[[2]]
+    
+    for (i in seq_along(names(df_list))) {
+      names(df_list)[[i]] <- Groups[i]}
+
+    filtered_df_list <- list()
+
+    for (group_name in names(df_list)[-length(df_list)]) {
+      filtered_df <- df_list[[group_name]]
+      filtered_df <- filtered_df[filtered_df$p.value < 0.05,]
+      filtered_df_list[[group_name]] <- filtered_df}
+    
+    filtered_df_list[[names(df_list)[length(df_list)]]] <- df_list[[length(df_list)]]
+
+    ordered_df_list <- lapply(filtered_df_list, function(df) df[order(df$stat, decreasing = T), ])
+    #cat(paste(shQuote(names(ordered_df_list), type="cmd"), collapse=", ")) 
+    
+    ordered_df_list_intest <- ordered_df_list[names(ordered_df_list) %in% Interested_Comparisons]
+    ordered_df_list_intest_0.7 <-list()
+    
+    for (group_name in names(ordered_df_list_intest)) {
+      filtered_df <- df_list[[group_name]]
+      filtered_df <- filtered_df[filtered_df$stat > 0.7, ]
+      ordered_df_list_intest_0.7[[group_name]] <- filtered_df
+    }
+    
+    print(Datasetname)
+    lapply(ordered_df_list_intest, dim)
+    lapply(ordered_df_list_intest_0.7, dim)
+
+    IndicatorSpecies_Reps_list[[IndicatorSpecies_Reps_list_length+1]] <- ordered_df_list_intest_0.7
+    names(IndicatorSpecies_Reps_list)[[IndicatorSpecies_Reps_list_length+1]] <- paste(Datasetname, Comparison, sep="_")
+}
+
+pslist$IndicatorSpecies_list_LOC <- IndicatorSpecies_Reps_list
+
+##############
+#Add Taxonomy#
+##############
+  InDat_list_Species <- IndicatorSpecies_list$SSU_Species
+  for (IndDat in names(InDat_list_Species)) {
+    InDat_list_Species[[IndDat]]$ASV <- rownames(InDat_list_Species[[IndDat]])
+    InDat_list_Species[[IndDat]] <- left_join(InDat_list_Species[[IndDat]],
+    as.data.frame(tax_table(merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF))) %>% 
+      mutate(ASV = rownames(.)))}
+
+#############################
+#Extract Bacterial Biomarker#
+#############################
+
+  
+  CompsOfInterest_LOC <- c(
+        "MG-713", 
+        "BB-692", 
+        "SS-665", 
+        "TF-651", 
+        "ML-633")
+
+  InDat_list_OE_LOC <- pslist$IndicatorSpecies_list_LOC$OE_LOC
+      for (IndDat in names(InDat_list_OE_LOC)) {
+      InDat_list_OE_LOC [[IndDat]]$ASV <- rownames(InDat_list_OE_LOC [[IndDat]])
+      InDat_list_OE_LOC [[IndDat]] <- left_join(InDat_list_OE_LOC [[IndDat]],
+      as.data.frame(tax_table(pslist$ps_OE)) %>% mutate(ASV = rownames(.)))}
+  IndicatorTaxa_OE_LOC <- unique(as.vector(unlist(lapply(InDat_list_OE_LOC[
+                            names(InDat_list_OE_LOC) %in% CompsOfInterest_LOC],function(df) df[["ASV"]])
+                            )))  
+  
+  InDat_list_GC_LOC <- pslist$IndicatorSpecies_list_LOC$GC_LOC
+      for (IndDat in names(InDat_list_GC_LOC )) {
+      InDat_list_GC_LOC [[IndDat]]$ASV <- rownames(InDat_list_GC_LOC [[IndDat]])
+      InDat_list_GC_LOC [[IndDat]] <- left_join(InDat_list_GC_LOC [[IndDat]],
+      as.data.frame(tax_table(pslist$ps_GC)) %>% mutate(ASV = rownames(.)))}
+  IndicatorTaxa_GC_LOC <- unique(as.vector(unlist(lapply(InDat_list_GC_LOC[
+                            names(InDat_list_GC_LOC) %in% CompsOfInterest_LOC],function(df) df[["ASV"]])
+                            )))    
+
+```
+
+### 7.1.4 Extract 
+
+```{r}
+
+IndicSpecies_list <- list()
+
+for (Dataset in names(pslist$IndicatorSpecies_list_LOC)) {
+  
+  IndicatorSpecies_list <- pslist$IndicatorSpecies_list_LOC
+    Datasetname <- sub("_LOC", "", Dataset)
+  
+    if (Datasetname %in% c("Fish")) {
+      ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC)
+      Comparison  <- "Species"
+      Interested_Comparisons <- c(
+        "GC", 
+        "OE"
+      )
+    } else if (Datasetname %in% c("SSU")) {
+      ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+      #ps <- filter_taxa(ps, function (x) {sum(x) > 50}, prune=TRUE)
+      Comparison  <- "Kind"
+      Interested_Comparisons <- c(
+        "Fish",
+        "Water"
+        )
+    } else if (Datasetname %in% c("OE", "GC")) {
+      ps <- pslist[[paste("ps",Datasetname, sep="_")]]
+      Comparison  <- "LOC"
+      Interested_Comparisons <- c(
+        "MG-713", 
+        "BB-692", 
+        "SS-665", 
+        "TF-651", 
+        "ML-633"
+      )
+    }
+
+    for (IndDat in names(IndicatorSpecies_list[[Dataset]])) {
+      
+      df <- IndicatorSpecies_list[[Dataset]][[IndDat]]
+      
+      ps_sub <- prune_samples(sample_names(ps)[sample_data(ps)[[Comparison]] == IndDat], ps)
+      
+      df <- df %>% 
+        mutate(ASV = rownames(.)) %>% 
+        left_join(
+          as.data.frame(tax_table(ps_sub)) %>% 
+          mutate(ASV = rownames(.))
+          ) %>% 
+        left_join(as.data.frame(t(otu_table(ps_sub %>%
+          transform_sample_counts(function(x) {x/sum(x)*100})))) %>% 
+          mutate(ASV = rownames(.))
+          ) %>% 
+        left_join(
+          as.data.frame(t(otu_table(ps_sub %>%
+          transform_sample_counts(function(x) {x/sum(x)*100})))) %>% 
+          dplyr::mutate(ASVmeans = rowMeans(.)) %>%
+          dplyr::mutate(ASV = rownames(.)) %>% 
+          dplyr::select(ASV, ASVmeans)
+          ) %>% 
+        dplyr::arrange(desc(ASVmeans))  %>%
+        dplyr::select(ASVmeans, everything())
+    
+      rownames(df) <- df$ASV
+        
+      write.csv2(df, file.path(path_Output_16S,paste(paste(save_name,  "IndicatorSpecies", Datasetname , Comparison, IndDat, Date, sep="_"), ".csv", sep="")))
+  }
+}
+
+
+```
+
+#-
+
+## 7.2 Aldex2
+
+
+```{r}
+# VARIABLE <- "Species"
+# ps <- pslist$ps_Fish
+# asv_dat <- data.frame(t(phyloseq::otu_table(ps)))
+# metadata <- data.frame(phyloseq::sample_data(ps))
+# taxa <- data.frame(phyloseq::tax_table(ps)) %>%
+#   rownames_to_column(var="ASV")
+# 
+#   ########
+#   #ALDEX2#
+#   ########
+#   ALDEx2_results <- ALDEx2::aldex(asv_dat, metadata[[VARIABLE]], test="t", effect = TRUE, denom="iqlr")
+#   ALDEx2::aldex.plot(ALDEx2_results , type="MW", test="wilcox", called.cex = 1, cutoff = 0.05)
+#   ALDEx2_results_sig <- ALDEx2_results %>%
+#     rownames_to_column(var = "ASV") %>%
+#     filter(wi.eBH < 0.05) %>%
+#     arrange(effect, wi.eBH) %>%
+#     dplyr::select(ASV, diff.btw, diff.win, effect, wi.ep, wi.eBH) %>%
+#      left_join( #Add relative ASVmeans 
+#        data.frame(t(phyloseq::otu_table(ps %>%
+#         transform_sample_counts(function(x) {x/sum(x)*100})))) %>%
+#           dplyr::mutate(ASVmeans = rowMeans(.)) %>%
+#           dplyr::mutate(ASV = rownames(.)) %>% 
+#           dplyr::select(ASV, ASVmeans)
+#     ) %>%
+#     left_join(taxa) %>% #Add taxonomy
+#     left_join( #Add relative ASV data per sample
+#         data.frame(t(phyloseq::otu_table(ps %>%
+#         transform_sample_counts(function(x) {x/sum(x)*100})))) %>%
+#         rownames_to_column(var = "ASV")
+#     ) %>%
+#     dplyr::arrange(desc(ASVmeans))
+#   
+#   rowclusternum <-2
+#   columnclusternum <-2
+#   HEIGHT <-5
+#   WIDTH <- 6
+#   CoreSet <- "Fish"
+#   FILENAME    <- paste(paste(save_name,"ALDEX2_Species", sep="_"), ".png", sep="")
+#   TITLE       <- draw_label_themeRK(paste("ALDEX2"), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+#   
+#   #OmicsData <- data.frame(t(phyloseq::otu_table(ps %>%
+#   #      transform_sample_counts(function(x) {x/sum(x)*100}))))
+#   
+#   OmicsData <- data.frame(t(phyloseq::otu_table(microbiome::transform(ps, "clr"))))
+#   
+#   BacteriaHeatPlotRK7_withCore(OmicsData = OmicsData, 
+#                                Species = Species, 
+#                                genes_of_interest = ALDEx2_results_sig$ASV, 
+#                                Samples = sample_names(pslist$clr_Fish), 
+#                                SAMDF = data.frame(sample_data(pslist$clr_Fish)),  
+#                                TITLE = TITLE, 
+#                                filename= FILENAME, 
+#                                OutlineColor="grey20", SHOW_ROW_NAMES = TRUE, SHOW_ROW_NAMES_ALL = TRUE, 
+#                                ZScore = TRUE
+#                                )
+```
+
+### 7.2 Combine ALDEX2 & IndicatorSpecies
+
+```{r}
+# IndicSpecies_Species <- c(rownames(pslist$IndicatorSpecies_list$Fish_Species$GC), rownames(pslist$IndicatorSpecies_list$Fish_Species$OE))
+# 
+# ALDEx2_results_sig
+# 
+# ALDEx2_results_sig$ASV 
+# IndicSpecies_Species[IndicSpecies_Species %in% ALDEx2_results_sig$ASV]
+# 
+# ALDEx2_results_sig[ALDEx2_results_sig$ASV %in% IndicSpecies_Species,]$ASV
+# 
+# 
+#  BacteriaHeatPlotRK7_withCore(OmicsData = OmicsData, 
+#                                Species = Species, 
+#                                genes_of_interest = ALDEx2_results_sig[ALDEx2_results_sig$ASV %in% IndicSpecies_Species,]$ASV, 
+#                                Samples = sample_names(pslist$clr_Fish), 
+#                                SAMDF = data.frame(sample_data(pslist$clr_Fish)),  
+#                                TITLE = TITLE, 
+#                                filename= FILENAME, 
+#                                OutlineColor="grey20", SHOW_ROW_NAMES = TRUE, SHOW_ROW_NAMES_ALL = TRUE, 
+#                                ZScore = TRUE
+#                                )
+
+```
+
+## 7.3 Ancom
+
+super slow
+
+```{r}
+  ##########
+  #ANCOMBC2#
+  ##########
+  # TSE <-mia::makeTreeSummarizedExperimentFromPhyloseq(ps)
+  # ANCOMBC_results <- ANCOMBC::ancombc2(data = TSE, assay_name = "counts", #tax_level = "ASV",
+  #                 fix_formula = "Species")
+  # 
+  # res_prim = output$res
+  # df_age = res_prim %>%
+  #   dplyr::select(taxon, ends_with("age")) 
+  # df_fig_age = df_age %>%
+  #   dplyr::filter(diff_age == 1) %>% 
+  #   dplyr::arrange(desc(lfc_age)) %>%
+  #   dplyr::mutate(direct = ifelse(lfc_age > 0, "Positive LFC", "Negative LFC"),
+  #                 color = ifelse(passed_ss_age == 1, "aquamarine3", "black"))
+  # df_fig_age$taxon = factor(df_fig_age$taxon, levels = df_fig_age$taxon)
+  # df_fig_age$direct = factor(df_fig_age$direct, 
+  #                          levels = c("Positive LFC", "Negative LFC"))
+  # 
+  # fig_age = df_fig_age %>%
+  #   ggplot(aes(x = taxon, y = lfc_age, fill = direct)) + 
+  #   geom_bar(stat = "identity", width = 0.7, color = "black", 
+  #            position = position_dodge(width = 0.4)) +
+  #   geom_errorbar(aes(ymin = lfc_age - se_age, ymax = lfc_age + se_age), 
+  #                 width = 0.2, position = position_dodge(0.05), color = "black") + 
+  #   labs(x = NULL, y = "Log fold change", 
+  #        title = "Log fold changes as one unit increase of age") + 
+  #   scale_fill_discrete(name = NULL) +
+  #   scale_color_discrete(name = NULL) +
+  #   theme_bw() + 
+  #   theme(plot.title = element_text(hjust = 0.5),
+  #         panel.grid.minor.y = element_blank(),
+  #         axis.text.x = element_text(angle = 60, hjust = 1,
+  #                                    color = df_fig_age$color))
+  # fig_age
+  # 
+  # 
+  # 
+  # ########
+  # #DESEQ2#
+  # ########
+  # require(DESeq2)
+  # countData = round(as(asv_dat, "matrix"), digits = 0)
+  # 
+  # dds <- DESeqDataSetFromMatrix(countData =round(as(asv_dat, "matrix"), digits = 0), colData = metadata,
+  #       design =as.formula(paste("~",VARIABLE)))
+  # dds  <- DESeq(dds)
+  # vst   <- varianceStabilizingTransformation(dds)
+  #   
+  # VARIABLE <- variable
+  #  
+  # mylist <- list() 
+  # for (i in 1:nrow(A)) {
+  # res <- results(ddslist[[Dataset]], lfcThreshold = 0.0, alpha=0.05, contrast=c(VARIABLE,A[i,1],A[i,2]))
+  # mylist[[i]] <- res 
+  # names(mylist)[[i]] <- A[i,3]}
+  # 
+  # mylist2 <-list()
+  # for (x in names(mylist)) {
+  # mylist2[[x]]<-dplyr::left_join(rownames_to_column(as.data.frame(mylist[[x]])),  
+  #                         rownames_to_column(as.data.frame(VST[rownames(VST) %in%
+  #                         rownames(as.data.frame(mylist[[x]])),])))
+  # 
+  # mylist2 <- lapply(mylist2,na.omit)
+  # paste("Dim with NAs")
+  # paste(sapply(mylist2,dim))
+  # paste("Bacterial species with Basemean lower 1")
+  # paste(sapply(lapply(mylist2, function(y) {y[which(y$baseMean < 1),]}),dim))
+  # mylist2 <- lapply(mylist2, function(y) {y[which(y$padj < alpha),]})
+  # paste("Dim NA omit")
+  # paste(sapply(mylist2,dim))
+  # mylist2 <- lapply(mylist2, function(z){z[order(z$padj),]})
+  # mylist2 <- lapply(mylist2, function(x) {x$sign <-ifelse(sign(x$log2FoldChange) > 0, "enriched", "diminished");return(x)})
+  # }
+  
+  
+```
+
+#-
+
+## 7.4 DESeq2
+
+```{r, DESeq2, message=FALSE, warning=FALSE}
+variable <- "Season"
+ddslist <- list()
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])]){
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+  require(phyloseq); require(DESeq2); require(tidyverse); require(plyr); require(dplyr)
+  Datasetname <- paste(Dataset); print(Datasetname)
+  a <- length(ddslist)
+  ps <- pslist[[Dataset]]
+  #sample_data(ps)[[variable]] <- as.factor(sample_data(ps)[[variable]])
+  #dds <- phyloseq_to_deseq2(ps, as.formula(paste("~",variable)))
+  #dds <- DESeq(dds)
+  
+    if (grepl("WF", Datasetname)) {
+    VARIABLE <- "Kind"
+    } else {
+    VARIABLE <- variable
+    }
+  
+    if (!taxa_are_rows(ps)) {
+        ps <- t(ps)}
+    countData = round(as(otu_table(ps), "matrix"), digits = 0)
+    SAMDF<-SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps)),]
+    library(DESeq2)
+    dds<- DESeqDataSetFromMatrix(countData =
+        as.matrix(as.data.frame(countData)[SAMDF$SampleID]), colData = SAMDF,
+        design =as.formula(paste("~",VARIABLE)))
+    dds  <- DESeq(dds)
+    vst   <- varianceStabilizingTransformation(dds)
+    ddslist [[a+1]] <- ps
+    names(ddslist )[[a+1]] <- paste("ps", sub("ps", "\\1", Datasetname), sep="")
+    ddslist [[a+2]] <- dds
+    names(ddslist )[[a+2]] <- paste("dds", sub("ps", "\\1", Datasetname), sep="")
+    ddslist [[a+3]] <- vst
+    names(ddslist )[[a+3]] <- paste("vst", sub("ps", "\\1", Datasetname), sep="")
+}
+
+for (Dataset in names(ddslist)[grepl("dds", names(ddslist))]) {
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+  require(DESeq2); require(tidyverse); require(plyr); require(dplyr)
+  tryCatch({
+  a       <- length(ddslist)
+  Datasetname      <- sub('....', '', Dataset); print(Datasetname)
+  name2   <- ddslist[names(ddslist)[grepl(paste(Datasetname), names(ddslist))]]
+  VST     <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  SAMDF   <- data.frame(sample_data(name2[[names(name2)[grepl("ps", names(name2))]]]))
+  
+  ###############Selection of Comparisons################
+  VariableOrder<-VariableOrder
+  A <- as.data.frame(t(combn(SAMDF %>% 
+  arrange(factor(Season, levels = VariableOrder)) %>% #Chane hard coded Variable name here! 
+  pull(paste(variable)) %>% 
+  unique(),2)))
+  A$V3<-Reduce(function(...) paste(..., sep = "-"), A)
+  #######################################################
+  
+  #  if (grepl("WF", i)) {
+  #   VARIABLE <- "Kind"
+  #   A <-data.frame(c("Fish"="Fish"), c("Water"="Water"), c("Fish-Water"= "Fish-Water"))
+  # } else {
+  #   VARIABLE <- variable
+  # }
+ 
+  VARIABLE <- variable
+   
+  mylist <- list() 
+  for (i in 1:nrow(A)) {
+  res <- results(ddslist[[Dataset]], lfcThreshold = 0.0, alpha=0.05, contrast=c(VARIABLE,A[i,1],A[i,2]))
+  mylist[[i]] <- res 
+  names(mylist)[[i]] <- A[i,3]}
+  
+  mylist2 <-list()
+  for (x in names(mylist)) {
+  mylist2[[x]]<-dplyr::left_join(rownames_to_column(as.data.frame(mylist[[x]])),  
+                          rownames_to_column(as.data.frame(VST[rownames(VST) %in%
+                          rownames(as.data.frame(mylist[[x]])),])))
+
+  mylist2 <- lapply(mylist2,na.omit)
+  paste("Dim with NAs")
+  paste(sapply(mylist2,dim))
+  paste("Bacterial species with Basemean lower 1")
+  paste(sapply(lapply(mylist2, function(y) {y[which(y$baseMean < 1),]}),dim))
+  mylist2 <- lapply(mylist2, function(y) {y[which(y$padj < alpha),]})
+  paste("Dim NA omit")
+  paste(sapply(mylist2,dim))
+  mylist2 <- lapply(mylist2, function(z){z[order(z$padj),]})
+  mylist2 <- lapply(mylist2, function(x) {x$sign <-ifelse(sign(x$log2FoldChange) > 0, "enriched", "diminished");return(x)})
+  }
+  
+  ddslist[[a+1]] <- mylist2
+  names(ddslist)[[a+1]] <- paste("res", sub("dds", "\\1", Datasetname), sep="")},
+  error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+names(ddslist)
+paste("Differentially Abundant Taxa")
+sapply(ddslist$"resGC" ,dim)[1,]
+
+###########
+#Save Data#
+###########
+saveRDS(ddslist, file = paste0(file.path(path_Output_16S, paste(paste(save_name,"16S_DAT_Replicates_pairwise", Date, sep="_"), ".rds", sep=""))))
+
+ddslist<-readRDS(file = paste0(file.path(path_Output_16S, paste(paste(save_name, "16S_DAT_Replicates_pairwise", Date, sep="_"), ".rds", sep=""))))
+```
+
+### 7.4.1 DAT visualization
+
+### 7.4.2 Pairwise Barplots
+
+Creates barplots of pairwise comparisons, excluded here as there are many 
+
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+###################
+#Pairwise Barplots#
+###################
+# for (i in names(ddslist)[grepl("res", names(ddslist))]){
+#   paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+#   require(plyr); require(ggrepel); require(cowplot);  require(scales)
+#   tryCatch({
+#   g       <- paste(i) 
+#   gg      <- sub('....', '', g)
+#   res     <- ddslist[[i]]
+#   FILENAME    <- paste(paste(Species, gg, Type, "LCF0"), ".png", sep="")
+#   TITLE       <- paste(Species, gg, Type, "Differential abundant taxa", sep=" ")
+#   for (x in names(res)){ 
+#         tryCatch({
+#   res_tax_sig <- res[[x]]
+#   xx       <- paste(x)
+#   #res <- res[res$baseMean >= 10,] #Select Species with Basemean higher 10
+#   res_tax_sig<-res_tax_sig[order(res_tax_sig$baseMean, decreasing=T), ] #order for BaseMean
+#   res_tax_sig_head <-head(res_tax_sig, 20)
+#   rownames(res_tax_sig_head) <-res_tax_sig_head$rowname
+#   p <- ggplot(data=res_tax_sig_head, aes(x=fct_reorder(rownames(res_tax_sig_head), baseMean), 
+#                                     y= log2FoldChange, fill = baseMean)) +
+#   geom_bar(stat="identity") + coord_flip() +
+#   scale_fill_gradient(low = "white", high = "red", breaks = c(10, 100, 500, 1000), limits=c(10,500), oob=squish) +
+#   geom_text(aes(label = round(baseMean, 0)), color="black", size=2.5)+
+#   theme(axis.text.y = element_text(size = 8), strip.text.x = element_text(size = 7),
+#         legend.title = element_text( size=6), legend.text=element_text(size=6), 
+#         axis.title = element_text(size = 8)) +  xlab("") + ylab("log2 FoldChange") 
+#   prow <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+#   title <- cowplot::ggdraw() + draw_label_themeRK(paste(paste(TITLE, ":", sep=""), x, sep = "       "), 
+#                 element = "plot.title",x = 0.05, hjust     = 0, vjust = 1)
+#         subtitle <- cowplot::ggdraw() + draw_label_themeRK(paste("top 20 of", table(sign(res_tax_sig$log2FoldChange) > 0)[2],"enriched,", table(sign(res_tax_sig$log2FoldChange) > 0)[1], "diminished species,", "[tax-glom on species level,", dim(otu_table(ddslist[[paste("ps_", noquote(gg), sep="")]]))[1],"taxa]", sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0, vjust = 1)
+# if (OperatingSystem == "Mac" ) { quartz() }
+# A<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0.05, 0.05, 0.98))
+#   plot(A)
+#   ggsave(A, filename = paste(paste(save_name, Type, "DESeq2-pairwise", xx, sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8,
+#   height = 8)},
+#         error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+#   },error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+# }
+```
+
+### 7.4.3 Aggregating DESeq2-Pairwise Comparisons
+
+```{r, Aggregating DESeq2-Pairwise Comparisons, message=FALSE, warning=FALSE}
+SSU_Data_list <- list()
+for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")) {
+
+  require(plyr)
+  require(dplyr)
+  require(phyloseq)
+
+  Datasetname <- sub("ps_", "", Dataset)
+  ps            <- pslist[[Dataset]]
+  SSU_Data_list_length <- length(SSU_Data_list)
+  
+  
+  TAX <- as.data.frame(tax_table(ps))
+  OTU <- as.data.frame(t(otu_table(ps)))
+  REFSEQ <- refseq(ps)
+  REFSEQ <- stack(as.character(REFSEQ, use.names=TRUE))
+  colnames(REFSEQ)[colnames(REFSEQ) == "ind"] <- "ASV"
+
+  #################################
+  #Creating AverageSums per Season#
+  #################################
+  SeasonSums <- ps %>%
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+    phyloseq::otu_table() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "SampleID") %>%
+    dplyr::left_join(SAMDF16S, by = c("SampleID" = "SampleID")) %>%
+    dplyr::group_by(Season) %>%
+    dplyr::summarise(dplyr::across(rownames(tax_table(ps)), mean, na.rm = TRUE)) %>% 
+    t() %>%
+    as.data.frame() %>%
+    `colnames<-`(.[1, ]) %>%
+    .[-1, ] %>%
+    setNames(paste0("avg_", colnames(.))) %>%
+    mutate_all(as.numeric) %>%
+    rownames_to_column(var="ASV")
+
+    SSU_Data  <- TAX %>%  
+     rownames_to_column(var = "ASV") %>% 
+       left_join( #Add relative ASVmeans 
+       data.frame(t(phyloseq::otu_table(ps %>%
+        transform_sample_counts(function(x) {x/sum(x)*100})))) %>%
+          dplyr::mutate(ASVmeans = rowMeans(.)) %>%
+          dplyr::mutate(ASV = rownames(.)) %>% 
+          dplyr::select(ASV, ASVmeans)
+       ) %>%
+    left_join( #Add Sums by Season
+        SeasonSums
+       ) %>%
+    left_join( #Add relative ASV data per sample
+        data.frame(t(phyloseq::otu_table(ps %>%
+        transform_sample_counts(function(x) {x/sum(x)*100})))) %>%
+        rownames_to_column(var = "ASV")
+    ) %>%
+     left_join(REFSEQ
+    ) %>%
+      dplyr::arrange(desc(ASVmeans))
+   
+   rownames(SSU_Data) <- SSU_Data$ASV
+
+
+  SSU_Data_list[[SSU_Data_list_length+1]] <- SSU_Data
+  names(SSU_Data_list)[[SSU_Data_list_length+1]] <- Datasetname 
+}
+
+###########################################################
+#Determine the Cluster-Numbers from the unclustered-Heatmap
+rowclusternum        <- 1
+columnclusternum     <- 1
+for (i in names(ddslist)[grepl("dds", names(ddslist))]) {
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de code adapted from https://github.com/kevinblighe/E-MTAB-6141")
+  tryCatch({  
+  min_count   <- 1
+  a           <- length(ddslist)
+  g           <- paste(i)
+  gg          <- sub('....', '', g)
+  FILENAME    <- paste(paste(Species, gg, Type, "LCF0"), ".png", sep="")
+  TITLE       <- draw_label_themeRKwhite(paste(Species, gg, Type, "DAT"), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+  name2       <- ddslist[names(ddslist)[grepl(paste(gg), names(ddslist))]]
+  vst         <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  ps          <-  name2[[names(name2)[grepl("ps", names(name2))]]]
+  SAMDF       <- SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps)),]
+  res         <- name2[[names(name2)[grepl("res", names(name2))]]] #res
+  res         <- lapply(res, function(z){z[z$baseMean >= min_count,]})
+  
+  resgenelist   <- list()
+    for (ii in names(res)) {
+      genes <- res[[ii]]$rowname
+      resgenelist[[ii]] <- genes}
+  resgenelist <- unique(as.vector(unlist(resgenelist)))
+
+  
+  
+  A           <- BacteriaHeatPlotRK6(vst = vst, Species = Species, min_count = min_count, 
+                          genes_of_interest = resgenelist, Samples = colnames(vst), SAMDF = SAMDF,  TITLE = TITLE)
+  A 
+   #Save heatmap to Environment
+  #b           <- length(.GlobalEnv[[name]])
+  #.GlobalEnv[[name]][[b+1]]        <- hmap
+  #names(.GlobalEnv[[name]])[[b+1]] <- paste("hmap", sub("dds6", "\\1", g), sep="-")
+  
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+
+############################################################
+#Cluster Heatmap with Extraction of Genes/Taxa from Cluster#
+rowclusternum        <- 4
+columnclusternum     <- 4
+Cluster       <- list()
+for (Dataset in names(ddslist)[grepl("dds", names(ddslist))]) {
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+  tryCatch({  
+  min_mean_count   <- 10
+  a           <- length(Cluster)
+  Datasetname          <- sub('....', '', Dataset)
+  CoreSet <- Datasetname
+  FILENAME    <- paste(paste(save_name, Type, "LCF0", "MinMeanGroup", min_mean_count, Datasetname, sep="_"), ".png", sep="")
+  TITLE       <- draw_label_themeRK(paste(Datasetname, Type, "DAT"), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+
+
+  name2       <- ddslist[names(ddslist)[grepl(paste(Datasetname), names(ddslist))]]
+  vst         <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  clr         <- as.data.frame(assay(pslist[[paste("TSEc.l.r", sub("dds", "", Dataset), sep="")]]))
+  ps          <- name2[[names(name2)[grepl("ps", names(name2))]]]
+  SAMDF       <- SAMDF16S[SAMDF16S$SampleID %in% rownames(sample_data(ps)),]
+  res         <- name2[[names(name2)[grepl("res", names(name2))]]] #res
+
+  WIDTH = 10 + length(SAMDF$SampleID) *0.05
+  
+  ##############################################
+  #Filter for min_mean_count per sampling group#
+  ASVs_to_keep <- list()
+  for (Replicates2 in unique(SAMDF[[variable]])) {
+    ASVs_to_keep_length <- length(ASVs_to_keep)
+    df <- as.data.frame(otu_table(ps))
+    df_order <- df[names(df) %in% SAMDF[SAMDF[variable] == Replicates2,]$SampleID]
+    df_order[] <- sapply(df_order, as.numeric)
+    df_order <- df_order[rowMeans(df_order) > min_mean_count,]
+    df_order <- rownames(df_order)
+    
+  ASVs_to_keep[[ASVs_to_keep_length+1]] <- df_order
+  names(ASVs_to_keep)[[ASVs_to_keep_length+1]] <- paste(Replicates2)
+  }
+  ASVs_to_keep <- unique(as.vector(unlist(ASVs_to_keep)))
+  
+  ########################
+  #Extract Deseq2 Results#
+  resgenelist   <- list()
+    for (ii in names(res)) {
+      genes <- res[[ii]]$rowname
+      resgenelist[[ii]] <- genes}
+  resgenelist <- unique(as.vector(unlist(resgenelist)))
+  
+  #####################################################
+  #Plot Hamp of z-Score CLR filtered for MinMean_Count#
+  resgenelist <- resgenelist[resgenelist %in% ASVs_to_keep]
+    # hmap <-  BacteriaHeatPlotRK7(OmicsData = CLR, Species = Species, 
+    #                     genes_of_interest = resgenelist, Samples = rownames(SAMDF), 
+    #                     SAMDF = SAMDF,  TITLE = TITLE, filename= FILENAME)
+  BacteriaHeatPlotRK7_withCore(OmicsData = clr, 
+                               Species = Species, 
+                               genes_of_interest = resgenelist, 
+                               Samples = SAMDF$SampleID, 
+                               SAMDF = SAMDF,  
+                               TITLE = TITLE, 
+                               filename= FILENAME, 
+                               OutlineColor="grey20",  
+                               SHOW_ROW_NAMES = T, 
+                               SHOW_ROW_NAMES_ALL = F,  
+                               ZScore =  F)
+  
+  #################################
+  #Extract Genes/Taxa from Heatmap#
+    hmap        <- draw(hmap)
+    clrow       <- row_order(hmap)
+    genecluster <- lapply(names(clrow), function(x){
+         out  <- data.frame(GeneID = rownames(heat[clrow[[x]],]),
+                    clrow = paste0(x),stringsAsFactors = FALSE)
+            return(out)}) %>%   
+         do.call(rbind, .)
+    
+  ######################
+  #Save Cluster Results#
+  Cluster1    <- genecluster[genecluster$clrow %in% c("Cluster 1"),]
+  Cluster2    <- genecluster[genecluster$clrow %in% c("Cluster 2"),]
+  Cluster3    <- genecluster[genecluster$clrow %in% c("Cluster 3"),]
+  Cluster4    <- genecluster[genecluster$clrow %in% c("Cluster 4"),]
+  #Cluster5    <- genecluster[genecluster$clrow %in% c("Cluster 5"),]
+  #Cluster6    <- genecluster[genecluster$clrow %in% c("Cluster 6"),]
+  Cluster1    <- heat[rownames(heat) %in% Cluster1$GeneID,]
+  Cluster2    <- heat[rownames(heat) %in% Cluster2$GeneID,]
+  Cluster3    <- heat[rownames(heat) %in% Cluster3$GeneID,]
+  Cluster4    <- heat[rownames(heat) %in% Cluster4$GeneID,]
+  #Cluster5    <- heat[rownames(heat) %in% Cluster5$GeneID,]
+  #Cluster6    <- heat[rownames(heat) %in% Cluster6$GeneID,]
+  Cluster[[a+1]] <- as.data.frame(Cluster1)
+  Cluster[[a+2]] <- as.data.frame(Cluster2)
+  Cluster[[a+3]] <- as.data.frame(Cluster3)
+  Cluster[[a+4]] <- as.data.frame(Cluster4)
+  #Cluster[[a+5]] <- as.data.frame(Cluster5)
+  #Cluster[[a+6]] <- as.data.frame(Cluster6)
+  names(Cluster)[[a+1]] <- paste("Cluster1-", sub("dds", "\\1", Datasetname), sep="")
+  names(Cluster)[[a+2]] <- paste("Cluster2-", sub("dds", "\\1", Datasetname), sep="")
+  names(Cluster)[[a+3]] <- paste("Cluster3-", sub("dds", "\\1", Datasetname), sep="")
+  names(Cluster)[[a+4]] <- paste("Cluster4-", sub("dds", "\\1", Datasetname), sep="")
+  #names(Cluster)[[a+5]] <- paste("Cluster5-", sub("dds", "\\1", Datasetname), sep="")
+  #names(Cluster)[[a+6]] <- paste("Cluster6-", sub("dds", "\\1", Datasetname), sep="")
+  
+  Cluster[[a+5]] <- hmap
+  names(Cluster)[[a+5]] <- paste("hmap", sub("dds", "\\1", Datasetname), sep="")
+  
+  Cluster[[a+6]] <- HeatPlot_prow
+  names(Cluster)[[a+6]] <- paste("HeatPlot_prow", sub("dds", "\\1", Datasetname), sep="")
+  },
+  error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+###########
+#Save Data#
+###########
+saveRDS(Cluster, file = paste0(file.path(path_Output_16S,paste(paste(save_name, "16S_DAT_Replicates_pw4_Cluster", Date, sep="_"), ".rds", sep=""))))
+        
+Cluster <-readRDS(file = paste0(file.path(path_Output_16S,paste(paste(save_name, "16S_DAT_Replicates_pw4_Cluster", Date, sep="_"), ".rds", sep=""))))
+
+
+#Export Data for Cluster
+###########################################
+#SSU_Data created in 4.2.4 Create SSU_Data#
+###########################################
+
+Deseq2Cluster_Taxonomy_list <- list()
+for (Dataset in names(ddslist)[grepl("dds", names(ddslist))]) {
+  Datasetname <- sub('....', '', Dataset)
+  
+  ps <- pslist[[paste("ps", Datasetname, sep="_")]]
+  SAMDF       <- SAMDF16S[SAMDF16S$SampleID%in% rownames(sample_data(ps)),]
+  SSU_Data <- SSU_Data_list[[which(grepl(Datasetname, names(SSU_Data_list)))]]
+  
+  
+  ClusterSet <- Cluster[grepl(Datasetname, names(Cluster))]
+  
+  Deseq2Cluster_Taxonomy_list_length <- length(Deseq2Cluster_Taxonomy_list)
+  
+  for (Comparison in names(ClusterSet[grepl("Cluster", names(ClusterSet))])) {
+
+      df <- ClusterSet[[paste(Comparison)]]
+      df <- SSU_Data[SSU_Data$ASV %in% rownames(df),]
+      
+      #df <- df %>% relocate(ASV, .after=SLSU21MLEB9rel)
+      rownames(df) <- df$ASV
+    
+      ASVs_to_keep <- list()
+        for (Replicates2 in unique(SAMDF[[variable]])) {
+          ASVs_to_keep_length <- length(ASVs_to_keep)
+          df_ASV <- as.data.frame(t(otu_table(ps)))
+          df_ASV_order   <- df_ASV[names(df_ASV) %in% SAMDF[SAMDF[variable] == Replicates2,]$SampleID]
+          df_ASV_order[] <- sapply(df_ASV_order, as.numeric)
+          #Subsetting for the actual Cluster#
+          df_ASV_order   <- df_ASV_order[rownames(df_ASV_order) %in% rownames(df),]
+          df_ASV_rel     <- as.data.frame(t(otu_table(ps %>%
+            transform_sample_counts(function(x) {x/sum(x)*100}))))
+          
+          df_ASV_order_rel <- left_join(df_ASV_order %>%
+                                  mutate(ASV = rownames(df_ASV_order)) %>%
+                                  select("ASV"), df_ASV_rel[names(df_ASV_rel) %in%
+                                  names(df_ASV_order)] %>% mutate(ASV = rownames(df_ASV_rel)))
+          
+          df_ASV_order_rel_mean <- df_ASV_order_rel %>%
+            dplyr::select(-ASV) %>%
+            dplyr::summarise(across(everything(), mean, na.rm = TRUE))  %>% rowMeans(.)
+          
+      ASVs_to_keep[[ASVs_to_keep_length+1]] <- df_ASV_order_rel_mean
+      names(ASVs_to_keep)[[ASVs_to_keep_length+1]] <- paste(Replicates2)
+      }
+      
+      max_name <- names(ASVs_to_keep)[which.max(unlist(ASVs_to_keep))]
+      
+      df_SSU_order <- df[grepl(paste(max_name), names(df)) & grepl("rel", names(df))]
+      
+      df_SSU_order[] <- sapply(df_SSU_order, as.numeric)
+      df_SSU_order<- as.data.frame(sort(rowMeans(df_SSU_order), decreasing = T)) 
+      names(df_SSU_order) <-paste("Mean", max_name, sep="_")
+      df_SSU_order$ASV <- rownames(df_SSU_order)
+      
+      df <- left_join(df_SSU_order, df)
+
+      Deseq2Cluster_Taxonomy_list[[ Deseq2Cluster_Taxonomy_list_length+1]] <- df
+      names( Deseq2Cluster_Taxonomy_list)[[ Deseq2Cluster_Taxonomy_list_length+1]] <- Comparison
+      write.csv2(df, file.path(path_Output_16S,paste(paste(save_name,  "16S_DAT_Replicates",paste("Deseq2_",Comparison, sep=""), Date, sep="_"), ".csv", sep="")))
+  }
+}
+
+```
+
+#-
+
+# 8  Venn Diagramms 
+
+```{r, message=FALSE, warning=FALSE}
+
+#VennDiagramm of Fish and Watersamples
+#We merge the phyloseqs here so that we have the filtered ASV per Sample_kind in one dataset
+ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+
+Venn_list_ps_Fish <- list(
+"OE" = names(rowSums(t(otu_table(subset_samples(ps, SampleID %in% sample_names(ps)[grepl("OE", sample_names(ps))])))) > 1)[rowSums(t(otu_table(subset_samples(ps, SampleID %in% sample_names(ps)[grepl("OE", sample_names(ps))])))) > 1], 
+"GC" = names(rowSums(t(otu_table(subset_samples(ps, SampleID %in% sample_names(ps)[grepl("GC", sample_names(ps))])))) > 1)[rowSums(t(otu_table(subset_samples(ps, SampleID %in% sample_names(ps)[grepl("GC", sample_names(ps))])))) > 1], 
+"Bacterioplankton" = names(rowSums(t(otu_table(subset_samples(ps, SampleID %in% sample_names(ps)[grepl("WFSU|WFAU|WFWI|WFSP", sample_names(ps))])))) > 1)[rowSums(t(otu_table(subset_samples(ps, SampleID %in% sample_names(ps)[grepl("WFSU|WFAU|WFWI|WFSP", sample_names(ps))])))) > 1]
+)
+Venn_plot <- ggVennDiagram::ggVennDiagram(Venn_list_ps_Fish , set_color = c("brown1","seagreen", "darkblue"), edge_size=1, set_size = 0) + theme(legend.position = "none")
+ggsave(Venn_plot, filename = paste(paste(save_name, "VENN_Species", sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 4, height = 4)
+plot(Venn_plot)
+
+Overlapping_Taxa <- Venn_list_ps_Fish$Bacterioplankton[Venn_list_ps_Fish$Bacterioplankton %in% c(Venn_list_ps_Fish$OE, Venn_list_ps_Fish$GC)]
+
+
+###########################
+#Seasonal Presence-Absence#
+###########################
+data <-  as.data.frame(t(otu_table(ps))) %>%
+  rownames_to_column(var = "ASV") %>%
+  pivot_longer(2:length(.), names_to = "SampleID", values_to = "count") %>% 
+  dplyr::left_join(data.frame(sample_data(ps))) 
+
+Venn_list <- list()
+for (SPECIES in unique(sample_data(ps)$Species)) {
+  Venn_list[[SPECIES]] <- list()
+  for (SEASON in SeasonOrder) {
+    filtered_data <- data %>%
+      dplyr::filter(Species == SPECIES) %>%
+      dplyr::filter(grepl(SEASON, Season)) %>%
+      dplyr::group_by(ASV) %>% 
+      dplyr::mutate(asv_sum = sum(count)) %>% 
+      dplyr::filter(asv_sum > 1) %>%
+      dplyr::select(-asv_sum) %>%
+      dplyr::select(ASV, SampleID, count) %>%
+      pivot_wider(names_from =  SampleID, values_from = count) 
+      #column_to_rownames(var = "ASV") 
+    Venn_list[[SPECIES]][[SEASON]] <- filtered_data
+  }
+}
+
+for (SPECIES in unique(sample_data(ps)$Species)) {
+  trial <- lapply(Venn_list[[SPECIES]], function(data) data$ASV)
+  COL   <- unname(col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in% names(trial)])
+  Venn_plot_Season <- ggVennDiagram::ggVennDiagram(trial, set_color =  COL, edge_size=1, set_size = 0) + 
+  theme(legend.position = "none") +
+  scale_x_continuous(expand = expansion(mult = .2))
+  ggsave(Venn_plot_Season, filename = paste(paste(save_name, "VENN_Season", SPECIES, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 5, height = 5)
+}
+
+plot(Venn_plot_Season)
+```
+
+#-
+
+# Save Data
+
+```{r, message=FALSE, warning=FALSE}
+###########
+#Save Data#
+###########
+saveRDS(pslist, file.path(path_Output_16S, paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+```
