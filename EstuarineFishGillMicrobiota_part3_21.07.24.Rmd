@@ -1,0 +1,2157 @@
+---
+title: "EstuarineFishGillMicrobiota_part3_21.07.24"
+output: html_document
+date: "2024-07-21"
+---
+
+We perform here different aspects of beta diversity analysis of the microbiota data gathered from fish gill mucus and bacterioplankton. 
+Most relevant sections are the distance based 6.3.1 PCOA and 6.4.3 RDA analyses as well as the 6.3.5 Mantel test for global matrix correlations. 
+Biomarker discovery via multipratt gives some indications for taxa specific for fish, bacterioplankton and seasonal sampling. Overall it seems adviced to run several biomarker discovery techniques in parallel but in this variable dataset they give little insides and are more meant as a backup for the network analysis.
+
+# 1 Global Setup 
+
+## 1.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+GitClonePath <- "/Users/admin/Desktop/EstuarineFishGillMicrobiota"
+setwd(GitClonePath)
+
+path_Input_16S <- paste(GitClonePath, "Fish_Input_16S", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "Fish_Output_16S", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "Fish_Plots", sep="/")
+
+#Create Folder if not existing
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Output_16S")), dir.create(file.path(GitClonePath, "Fish_Output_16S")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "Fish_Plots")), dir.create(file.path(GitClonePath, "Fish_Plots")), FALSE)
+
+```
+
+## 1.2 Packages
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::snapshot()
+#packrat::restore()
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "ComplexHeatmap",
+#   "Biostrings",
+#   "BiocParallel",
+#   "BiocNeighbors",
+#   "BiocFileCache",
+#   "BiocBaseUtils",
+#   "ShortRead",
+#   "SummarizedExperiment",
+#   "TreeSummarizedExperiment",
+#   "phyloseq",
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   ), force =T)
+
+#install.packages("remotes")
+#remotes::install_github("jfq3/ggordiplots")
+#install.packages("devtools")
+#install.packages("ggordiplots")
+#install.packages("RcmdrMisc")
+#install.packages("adespatial")
+#install.packages("ggVennDiagram")
+#install.packages("ggpicrust2")
+```
+
+## 1.3 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the Fish_Functions_19.07.24_Paper.Rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+
+#source_rmd("Fish_Functions_19.07.24_Paper.Rmd")
+source_rmd("/Users/admin/Desktop/EstuarineFishGillMicrobiota/Fish_Functions_19.07.24_Paper.Rmd")
+```
+
+## 1.4 Input Files
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+#Sequencing was performed in 3 runs and 2 batches, Batch1 was sequenced twice to increase sequencing depth
+#all runs were individually processed in the Dada2 pipeline and merged at the seqtab step
+#########################
+#Read DADA2 Output files#
+
+taxa  <-readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergemerge-Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "Fish_17.09.23_mergeseqtab.nochim.rds"))
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Fish_Batch2-26.07.23_470_Track_reads_through_pipeline.csv"))
+
+########################################################################
+#Import samplefile and filter for samples with successful 16S sequencing
+library(readxl)
+SAMDF16S<- as.data.frame(read_excel(file.path(path_Input_16S, "Fish_samplefile_24.03.2024.xlsx")))[,-1]
+write.table(SAMDF16S, file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+
+SAMDF16S <-read.table(file=file.path(path_Input_16S, "Fish_samplefile_24.03.2024.csv"), sep=";",dec = ".")
+rownames(SAMDF16S) <- SAMDF16S$SampleID
+
+```
+
+
+## 1.5 Tutorials
+
+```{r, message=FALSE, warning=FALSE,  include=FALSE}
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+
+## 1.6 Setup Analysis
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Date of the Analysis for save-names#
+Date <- "19.07.2024"
+set.seed(123)
+Species    <- "OE_GC"
+Kind       <- "Fish"
+Tissue     <- "Gill"
+Year       <- "2021_2022"
+Season     <- "SU_AU_WI_SP"
+Type       <- "16S"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+#Differential Abundance Testing
+OutlineColor <- "grey20"
+
+#####################
+variable = Comparisons = "Replicates2"
+#####################
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand", "Twielenfleth","Muehlenberger Loch")
+SeasonOrder <-c("Summer_21", "Autumn_21", "Winter_22", "Spring_22")
+CruiseOrder<-c("Elbe_Summer_21", "Elbe_Autumn_21", "Elbe_Winter_22","Elbe_Spring_22")
+
+VariableOrder<-c(
+  "GCSU21BB", "GCSU21SS", "GCSU21TW", "GCSU21ML", 
+  "GCAU21BB", "GCAU21SS", "GCAU21TW", "GCAU21ML", 
+  "GCWI22BB", "GCWI22SS",             "GCWI22ML", 
+  "GCSP22BB", "GCSP22SS", "GCSP22TW", "GCSP22ML", 
+  
+  "OESU21MG", "OESU21BB", "OESU21SS", "OESU21TW", "OESU21ML", 
+  "OEAU21MG", "OEAU21BB", "OEAU21SS", "OEAU21TW", "OEAU21ML",
+  "OEWI22MG", "OEWI22BB", "OEWI22SS", "OEWI22TW", "OEWI22ML",
+  "OESP22MG", "OESP22BB", "OESP22SS", "OESP22TW", "OESP22ML",
+  
+  "WF")
+
+
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand","Twielenfleth", "Muehlenberger Loch")
+LOCOrder=c("MG-713", "BB-692", "SS-665","TF-651", "ML-633")
+save_name <- paste(Species,Year,Season,sep = "_")
+#Check your Output: 
+paste0(file.path(path_Output_16S, "DAT_"), save_name, ".RData")
+
+SAMDF16S$LOC<-ifelse(SAMDF16S$Loc == "Medem Grund", "MG-713",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "BB-692",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "SS-665",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "TF-651",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "ML-633", NA)))))
+
+SAMDF16S$"geographic.location..latitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "53.8363",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "53.8874",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "53.71442",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "53.60921",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "53.54907", NA)))))
+SAMDF16S$"geographic.location..longitude."<-ifelse(SAMDF16S$Loc == "Medem Grund", "8.88777",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "9.19429",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "9.46976",
+                                  ifelse(SAMDF16S$Loc == "Twielenfleth", "9.56536",
+                                        ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "9.82338", NA)))))
+
+SAMDF16S$Reps <- sub("^.{2}", "", SAMDF16S$Replicates2)
+SAMDF16S$Reps<- ifelse(SAMDF16S$Reps == "SU21MG", "SU 713",
+                            ifelse(SAMDF16S$Reps == "SU21BB", "SU 692",
+                            ifelse(SAMDF16S$Reps == "SU21SS", "SU 665",
+                            ifelse(SAMDF16S$Reps == "SU21TW", "SU 651",
+                            ifelse(SAMDF16S$Reps == "SU21ML", "SU 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "AU21MG", "AU 713",
+                            ifelse(SAMDF16S$Reps == "AU21BB", "AU 692",
+                            ifelse(SAMDF16S$Reps == "AU21SS", "AU 665",
+                            ifelse(SAMDF16S$Reps == "AU21TW", "AU 651",
+                            ifelse(SAMDF16S$Reps == "AU21ML", "AU 633", 
+                            
+                            ifelse(SAMDF16S$Reps == "WI22MG", "WI 713",
+                            ifelse(SAMDF16S$Reps == "WI22BB", "WI 692",
+                            ifelse(SAMDF16S$Reps == "WI22SS", "WI 665",
+                            ifelse(SAMDF16S$Reps == "WI22TW", "WI 651",
+                            ifelse(SAMDF16S$Reps == "WI22ML", "WI 633", 
+                                   
+                            ifelse(SAMDF16S$Reps == "SP22MG", "SP 713",
+                            ifelse(SAMDF16S$Reps == "SP22BB", "SP 692",
+                            ifelse(SAMDF16S$Reps == "SP22SS", "SP 665",
+                            ifelse(SAMDF16S$Reps == "SP22TW", "SP 651",
+                            ifelse(SAMDF16S$Reps == "SP22ML", "SP 633", 
+                                   "WF")))))
+                            )))))))))))))))
+
+     RepOrder <-c(
+    "SU 713", "SU 692","SU 665","SU 651","SU 633", 
+    "AU 713","AU 692","AU 665","AU 651","AU 633", 
+    "WI 713","WI 692","WI 665","WI 651","WI 633", 
+    "SP 713","SP 692","SP 665","SP 651","SP 633")
+     
+
+SAMDF16S$RepsSpecs <- paste(SAMDF16S$Species, SAMDF16S$Reps, sep=" ")
+SAMDF16S$RepsSpecs[SAMDF16S$RepsSpecs == "WF"] <- "WF"
+
+SAMDF16S$HSI     <- SAMDF16S$LiverWeight/SAMDF16S$Weight*100
+SAMDF16S$SSI     <- SAMDF16S$SpleenWeight/SAMDF16S$Weight*100
+SAMDF16S$GSI     <- SAMDF16S$GonadWeight/SAMDF16S$Weight*100
+SAMDF16S$FCF <-  (100*SAMDF16S$Weight/(SAMDF16S$Length/10)^3)
+SAMDF16S$FI  <- SAMDF16S$StomachContent/SAMDF16S$Weight*100
+ 
+SAMDF16S <- SAMDF16S %>% mutate(Maturity = case_when(
+                    (Species== "GC" & Length >= 10.5) ~ "Adult", 
+                    (Species== "GC" & Length < 10.5) ~ "Juvenile", 
+                    (Species== "OE" & Length >= 10) ~ "Adult", Length < 10 ~ "Juvenile"))
+
+SAMDF16S <- SAMDF16S %>% 
+  mutate(Age = case_when(
+    Species != "OE" ~ as.character(Age),  
+    (Species == "OE" & Length < 90) ~ "0", 
+    (Species == "OE" & Length <= 130) ~ "1", 
+    (Species == "OE" & Length <= 180) ~ "2", 
+    (Species == "OE" & Length <= 220) ~ "3", 
+    (Species == "OE" & Length > 220) ~ "4"
+  ))
+SAMDF16S$Age <- as.numeric(SAMDF16S$Age)
+
+SAMDF16S$fSeason <- factor(SAMDF16S$Season, level = SeasonOrder)
+SAMDF16S$fLOC <- factor(SAMDF16S$LOC, level = LOCOrder)
+SAMDF16S$Species <- substr(SAMDF16S$SampleID, 1, nchar(SAMDF16S$SampleID) - 9)
+SAMDF16S$fReplicates <- factor(SAMDF16S$Replicates, levels = VariableOrder[VariableOrder %in%                                                                               SAMDF16S$Replicates])
+
+SAMDF16S$fCruise <- factor(SAMDF16S$Cruise, level = CruiseOrder)
+
+#Adding in Elbe Estuary Public Monitoring Data from https://www.fgg-elbe.de/fachinformationssystem.html
+Mean_AbioticsFGG <- readRDS(file.path(path_Input_16S, "Mean_AbioticsFGG_16.02.24.rds"))
+names(Mean_AbioticsFGG)[names(Mean_AbioticsFGG) == "Season"] <- "Cruise"
+names(SAMDF16S)[names(SAMDF16S) == "O2"] <- "O2_catch"
+names(SAMDF16S)[names(SAMDF16S) == "O2Sat"] <- "O2Sat_catch"
+names(SAMDF16S)[names(SAMDF16S) == "pH"] <- "pH_catch"
+
+colnames(Mean_AbioticsFGG) <- sub("_mean", "",colnames(Mean_AbioticsFGG))
+SAMDF16S <- dplyr::left_join(SAMDF16S, Mean_AbioticsFGG)
+
+SSU_Samples <-c(
+#Ruffe
+#Summer21
+"GCSU21BBEB1", "GCSU21BBEB2", "GCSU21BBEB4", "GCSU21BBEB5",                              "GCSU21BBFL3",
+"GCSU21SSEB1", "GCSU21SSEB2", "GCSU21SSEB3", "GCSU21SSEB4", "GCSU21SSEB8","GCSU21SSFL1", "GCSU21SSFL3",
+"GCSU21TWEB1", "GCSU21TWEB2", "GCSU21TWEB3", "GCSU21TWEB4", "GCSU21TWFL1", "GCSU21TWFL2", "GCSU21TWFL3",
+"GCSU21MLEB1", "GCSU21MLEB2", "GCSU21MLEB3", "GCSU21MLEB5", "GCSU21MLEB6", "GCSU21MLFL1", "GCSU21MLFL2", "GCSU21MLFL3", "GCSU21MLFL6",
+
+#"GCSU21BBEB6" missing physiology
+#"GCSU21BBFL2" equal to water samples 
+
+#Autumn21
+"GCAU21BBEB1", "GCAU21BBEB2", "GCAU21BBEB3", "GCAU21BBFL1", "GCAU21BBFL2", "GCAU21BBFL3", "GCAU21BBFL4",
+"GCAU21SSEB1", "GCAU21SSEB3", "GCAU21SSEB5", "GCAU21SSEB7", "GCAU21SSFL1", "GCAU21SSFL3", "GCAU21SSFL5",
+"GCAU21TWEB1", "GCAU21TWFL1", "GCAU21TWFL2",
+"GCAU21MLEB1", "GCAU21MLEB2", "GCAU21MLEB3", "GCAU21MLFL1", "GCAU21MLFL3", "GCAU21MLFL5", "GCAU21MLFL7", 
+#Winter21
+"GCWI22BBEB1", "GCWI22BBFL1", "GCWI22BBFL2",
+"GCWI22SSEB1", "GCWI22SSEB2", "GCWI22SSEB3", "GCWI22SSFL1", "GCWI22SSFL2", 
+"GCWI22MLEB1", "GCWI22MLFL1", "GCWI22MLFL2",
+#Spring21
+"GCSP22BBEB1", "GCSP22BBEB3", "GCSP22BBEB5", "GCSP22BBEB7", "GCSP22BBEB9", "GCSP22BBFL1", "GCSP22BBFL2",
+"GCSP22SSEB1", "GCSP22SSEB3", "GCSP22SSEB5", "GCSP22SSEB7", "GCSP22SSFL1", "GCSP22SSFL3", "GCSP22SSFL5",
+"GCSP22TWEB1", "GCSP22TWFL1", "GCSP22TWFL2", "GCSP22TWFL3",   
+"GCSP22MLEB1", "GCSP22MLEB3", "GCSP22MLEB5", "GCSP22MLEB7", "GCSP22MLFL1", "GCSP22MLFL3", "GCSP22MLFL5",
+#Summer22 ML
+#"GCSU22MLEB1", "GCSU22MLEB2", "GCSU22MLEB3", "GCSU22MLEB4", "GCSU22MLEB5", "GCSU22MLEB6", "GCSU22MLEB7",  
+
+#Smelt
+"OESU21MGEB1", "OESU21MGEB4", "OESU21MGEB6", "OESU21MGEB8", "OESU21MGEB9", "OESU21MGFL2", "OESU21MGFL6",
+"OESU21BBEB5", "OESU21BBEB6", "OESU21BBEB7", "OESU21BBEB8", "OESU21BBEB9", "OESU21BBFL1", "OESU21BBFL4",
+"OESU21SSEB6", "OESU21SSEB7", "OESU21SSEB8", "OESU21SSEB9", "OESU21SSFL1", "OESU21SSFL2", "OESU21SSFL6",
+"OESU21TWEB2", "OESU21TWEB3", "OESU21TWEB4", "OESU21TWFL1", "OESU21TWFL3", "OESU21TWFL5", "OESU21TWFL7",
+"OESU21MLEB1", "OESU21MLEB2", "OESU21MLEB3", "OESU21MLFL1", "OESU21MLFL2",
+
+"OEAU21MGEB1", "OEAU21MGEB3", "OEAU21MGEB5", "OEAU21MGEB7", "OEAU21MGFL1", "OEAU21MGFL3", "OEAU21MGFL5",
+"OEAU21BBEB1", "OEAU21BBEB3", "OEAU21BBEB6", "OEAU21BBEB7", "OEAU21BBFL2", "OEAU21BBFL4", "OEAU21BBFL6",
+"OEAU21SSEB1", "OEAU21SSEB3", "OEAU21SSEB5", "OEAU21SSEB8", "OEAU21SSFL1", "OEAU21SSFL3", "OEAU21SSFL6",
+"OEAU21TWEB1", "OEAU21TWEB3", "OEAU21TWEB5", "OEAU21TWEB7", "OEAU21TWFL1", "OEAU21TWFL3", "OEAU21TWFL7",
+"OEAU21MLEB1", "OEAU21MLEB3", "OEAU21MLEB5", "OEAU21MLEB7", "OEAU21MLFL1", "OEAU21MLFL3", "OEAU21MLFL7",
+
+"OEWI22BBEB1", "OEWI22BBEB4", "OEWI22BBEB5", "OEWI22BBEB7", "OEWI22BBFL1", "OEWI22BBFL3", "OEWI22BBFL7", 
+"OEWI22MGEB1", "OEWI22MGEB3", "OEWI22MGEB5", "OEWI22MGEB9", "OEWI22MGFL1", "OEWI22MGFL3", "OEWI22MGFL7",
+"OEWI22SSEB1", "OEWI22SSEB5", "OEWI22SSEB7", "OEWI22SSEB9", "OEWI22SSFL1", "OEWI22SSFL5", "OEWI22SSFL8",  
+"OEWI22TWEB1", "OEWI22TWEB2", "OEWI22TWEB3", "OEWI22TWEB4", "OEWI22TWEB5", "OEWI22TWEB7", "OEWI22TWEB9",
+"OEWI22MLEB1", "OEWI22MLEB3", "OEWI22MLEB7", "OEWI22MLEB9", "OEWI22MLFL1", "OEWI22MLFL5", "OEWI22MLFL7", 
+
+"OESP22MGEB1", "OESP22MGEB3", "OESP22MGEB5", "OESP22MGEB7", "OESP22MGFL1", "OESP22MGFL3", "OESP22MGFL5",
+"OESP22BBEB1", "OESP22BBEB3", "OESP22BBEB7", "OESP22BBEB8", "OESP22BBFL2", "OESP22BBFL3", "OESP22BBFL5",
+"OESP22SSEB1", "OESP22SSEB2", "OESP22SSEB3", "OESP22SSEB4", "OESP22SSFL1", "OESP22SSFL3", "OESP22SSFL5",
+"OESP22TWEB1", "OESP22TWEB2", "OESP22TWEB5", "OESP22TWFL1", "OESP22TWFL3", "OESP22TWFL5", "OESP22TWFL7",
+"OESP22MLEB1", "OESP22MLEB2", "OESP22MLEB3", "OESP22MLFL1", "OESP22MLFL2", "OESP22MLFL3", "OESP22MLFL4",
+
+#"OESU22MLEB1", "OESU22MLEB2", "OESU22MLEB3", "OESU22MLEB4", 
+
+"WFSU21MGEB",
+"WFSU21BBEB",
+"WFSU21SSFL",
+"WFSU21MLFL", 
+
+"WFAU21TWEB",
+
+"WFWI22MGEB", "WFWI22MGFL",
+"WFWI22BBEB", "WFWI22BBFL",
+"WFWI22MLFL", "WFWI22SSFL", 
+
+"WFSP22MGEB", "WFSP22MGFL",
+"WFSP22BBEB", "WFSP22BBFL", 
+"WFSP22SSEB", "WFSP22SSFL",
+"WFSP22MLEB", "WFSP22MLFL"
+
+#"WFSU22MLEB"
+)
+      
+SAMDF16S$Species[SAMDF16S$Species == "W"] <- "WF"
+SAMDF16S$fSpecies <- factor(SAMDF16S$Species, levels=c("WF", "OE", "GC"))
+
+
+###########################################################################################################
+#For ENA_Sample Submission! Open in Numbers or Libre office, stupid Excel will destroy geo and other data!#
+###########################################################################################################
+  write.table(SAMDF16S, paste0(file.path(path_Output_16S, paste(paste(save_name,
+            paste("SAMDF16S", sep=""),sep="_"),".txt", sep=""))), dec = ".", sep = "\t")
+
+pslistraw <- readRDS(file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+pslist <- readRDS(file.path(path_Output_16S,paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+colored_taxonomy_Fish <- pslist$Optics$colored_taxonomy_Fish
+```
+
+#-
+
+# 6 Beta Diversity
+
+## 6.1 PCA
+
+CLR tranformed data in PCA analysis 
+
+```{r, message=FALSE, warning=FALSE}
+##################
+# SampleDist_PCAs# Publication 
+##################
+#pslist <- pslistraw
+for (i in names(pslist)[grepl("TSEc.l.r", names(pslist))]){
+  require(plyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(DESeq2)
+  require(matrixStats)
+  TSE <- pslist[[i]]
+  tryCatch({
+  g       <- paste(i); print(i) 
+  gg      <- sub('TSEc.l.r_', '', g)
+  
+  COL <- col.Palette$col.Palette.RepsSpecs[names(col.Palette$col.Palette.RepsSpecs) %in% TSE@colData$RepsSpecs]
+  
+  
+  A <- pcaplotRK_publication(TSE,intgroup = c("RepsSpecs"), pcX = 1, pcY = 2, title="", ellipse = F, ellipse.prob = 0.5, group_order = COL) +
+    scale_fill_manual(values  = COL) +
+    scale_color_manual(values = COL) + 
+    atheme +
+  theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=6), 
+        legend.text=element_text(size=6)) +
+    theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+
+  SampleDist_PCA <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  
+  A <- plot_grid(SampleDist_PCA, ncol = 1)
+   plot(A)
+  ggsave(A, filename = paste(save_name, gg, "clrPCA.png"), path = pathPlots, device='png', dpi=300, width = 8,
+  height = 7)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+```
+
+
+
+
+## 6.2 CCA
+
+```{r}
+
+###################
+#CCA with relabund#    
+###################
+for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE|ps_Fish", names(pslist)[!grepl("WF", names(pslist))])]){
+  require(plyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(DESeq2)
+  require(matrixStats)
+  tryCatch({
+    
+  ps <- pslist[[Dataset]]
+  
+  Datasetname <- sub("ps_", "", Dataset)
+  
+
+  
+  if (Datasetname == "Fish") {
+  COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in% sample_data(ps)$Season]
+  GroupingVariable <- c("Season", "LOC")
+  } else {
+  COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in% sample_data(ps)$Season]
+  GroupingVariable <- c("Season", "LOC")
+  }
+
+  if (Datasetname %in% c("GC", "Fish")) {
+  ps <- prune_samples(sample_names(ps)[!grepl("GCSU21BBEB6", sample_names(ps))], ps) 
+  } else {ps <- ps}
+
+
+  if (Datasetname == "GC") {
+  Traits <- c(
+    "Salinity","O2","SecchiDepth", "Temperature",
+    "Age", "FCF", "HSI", "SSI",
+  GroupingVariable)
+  print(Traits)
+  } else if (Datasetname %in% c("OE", "Fish")) {
+  Traits <- c(
+    "Salinity","O2","SecchiDepth", "Temperature",
+    "Cortison", GroupingVariable)
+  print(Traits)
+  } else {print("error")}
+  
+  
+  print(paste("Samples removed for low frequency below 10000 seqs in;", g, sep = ""))
+  print(which(rowSums(otu_table(ps)) < 5000))
+  ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+  ps_Filter_relAbund <- ps_Filter %>%
+        transform_sample_counts(function(x) {x/sum(x)*100}) 
+  
+  sample_data(ps_Filter)<-sample_data(ps_Filter)[ ,(names(sample_data(ps_Filter)) %in% Traits)]
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  print("NAs in TraitData")
+  print(table(is.na(sample_data(ps_Filter))))
+
+  include <- Traits[Traits != GroupingVariables]
+
+  
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  Include <- Traits[Traits %!in% GroupingVariables]
+
+  df_Traits <- data.frame(sample_data(ps_Filter))
+  df_Traits <- df_Traits[names(df_Traits) %in% Traits]
+  
+  df_Include <- df_Traits[names(df_Traits) %in% Include]
+  df_Include <- decostand(df_Include, method='standardize')
+
+  ##################################################
+  #Determine which variables are useful for the plot#
+  ##################################################
+  relAbund_table <- as.data.frame(otu_table(ps_Filter_relAbund, taxa_are_rows = FALSE)) 
+  
+  ##################################################
+  #Determine which variables are useful for the plot#
+  ##################################################
+  abund_table.adonis <- vegan::adonis2(relAbund_table ~ ., data=df_Include)
+  print(Datasetname)
+  print(abund_table.adonis)
+  abund_table.adonis.sig <- abund_table.adonis[!is.na(abund_table.adonis$`Pr(>F)`),]
+  abund_table.adonis.sig <- abund_table.adonis.sig[abund_table.adonis.sig$`Pr(>F)` < 0.05,]
+  sig.variables <- row.names(abund_table.adonis.sig)
+  
+  df_Significant <- df_Include[names(df_Include) %in% c(sig.variables)]
+
+  #########################
+  #Peform the CCA analysis#
+  #########################
+  perform_cca <- function(abund_table, meta_table) {
+  formula_text <- reformulate(response = "abund_table", 
+                            termlabels = names(meta_table))
+    tryCatch({
+      vegan.cca <- vegan::cca(formula_text, data = meta_table)
+      return(vegan.cca)
+      }, error = function(e) {
+      message("Error performing CCA: ", e$message)
+      return(NULL)
+      })
+  }
+  
+  result.cca <- perform_cca(relAbund_table, df_Significant)
+  scores.cca<- vegan::scores(result.cca, display=c("sp","wa","lc","bp","cn"))
+  
+  #########################
+  #Extract site data first#
+  df_sites <- data.frame(scores.cca$sites,df_Traits)
+
+  ############
+  #Draw sites#
+  p <-  ggplot(data=df_sites,aes(CCA1,CCA2,colour=Season, shape=LOC)) +
+        geom_point() +
+    scale_color_manual(values = COL) + 
+        scale_fill_manual(values = COL) +
+    #ggrepel::geom_label_repel(mapping = aes_string(label = "LOC", 
+    #        fill = "LOC"), color = "white", show.legend = TRUE)
+    ggrepel::geom_text_repel(aes(label = LOC))
+    
+  multiplier <- vegan:::ordiArrowMul(scores.cca$biplot)
+  df_arrows<- scores.cca$biplot*multiplier
+  df_arrows=as.data.frame(df_arrows)
+  
+    p <- p + geom_segment(data=df_arrows,inherit.aes=F, mapping=(aes(x = 0, y = 0, xend = CCA1, yend = CCA2)), arrow = arrow(length = unit(0.2, "cm")),color="grey60",alpha=0.8) +
+    geom_text_repel(data=as.data.frame(df_arrows*1.2), inherit.aes=F, mapping=aes(CCA1, CCA2, label =
+                    rownames(df_arrows)),color="grey30",alpha=0.99, size = 6)
+    
+  p <- p + atheme +
+   theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=6), 
+        legend.text=element_text(size=6)) +
+    theme(
+        panel.grid.major = element_line(colour = "white"), 
+        panel.grid.minor = element_line(colour = "white"))
+  
+  p <-p+ xlab(paste(sub("CAP1", "", ord_labels(result.cca)[1]))) + 
+         ylab(paste(sub("CAP2", "", ord_labels(result.cca)[2]))) 
+  
+   CCA_plot <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+  
+   CCA_plot <- plot_grid(CCA_plot, ncol = 1)
+   plot(CCA_plot)
+   ggsave(CCA_plot, filename = paste(paste(save_name, "relabund_sigvariable_CCA", Datasetname, sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8,
+   height = 7)
+   
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+```
+
+## 6.3 Bray-Dist 
+
+We create a average distance dataset here by permutated subsampling
+
+```{r}
+Bray_list <- list()
+for (Dataset in c(names(pslist)[grepl("ps_GC|ps_OE|ps_Fish|ps_SSU", names(pslist))], "ps_WF")) {
+  
+  require(phyloseq)
+  require(vegan)
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(ggordiplots)
+  
+  Datasetname <- sub("ps_", "", Dataset)
+  #ps <- pslist[[Dataset]]
+  
+  Samples <- sample_names(pslist[[Dataset]])
+  ps <- merge_phyloseq(pslist$ps_OE, pslist$ps_GC, pslist$ps_WF)
+  ps <- prune_samples(sample_names(ps) %in% Samples, ps)
+  
+  
+  Bray_list_length <- length(Bray_list)
+  
+    if (Datasetname %in% c("GC", "OE", "GCWF", "OEWF", "Fish")) {
+      print(paste("Samples removed for low frequency below 5000 seqs in;", Dataset, sep = ""))
+      print(which(rowSums(otu_table(ps)) < 5000))
+      ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+    } else if (Datasetname %in% c("SSU")) {
+      print(paste("Samples removed for low frequency below 5000 seqs in;", Dataset, sep = ""))
+      print(which(rowSums(otu_table(ps)) < 5000))
+      ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+    } else if (Datasetname %in% c("WF")) {
+      print(paste("No Waterfiler Samples removed ;", Dataset, sep = ""))
+      print(rowSums(otu_table(ps)))
+      ps_Filter <- ps
+    }
+  
+  ps_Filter_relAbund <- ps_Filter %>%
+        transform_sample_counts(function(x) {x/sum(x)*100}) 
+    
+  ###############
+  #RelAbund Dist#
+  ###############
+  relAbund_dist_matrix <- 
+        as.data.frame(otu_table(ps_Filter_relAbund, taxa_are_rows = FALSE)) %>%
+        vegdist(., method="bray")
+  
+  ##############
+  #Average Dist#
+  ##############
+  smallest_group <- min(rowSums(otu_table(ps_Filter)))
+  print("Smallest group for avgdist")
+  print(smallest_group)
+  Avg_dist_matrix <- avgdist(as.data.frame(otu_table(ps_Filter, 
+                        taxa_are_rows = FALSE)), dmethod = "bray", sample = smallest_group)
+  
+  
+  relAbund_dist_dist_tibble <- relAbund_dist_matrix %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample) %>%
+    filter(name < sample )
+
+  Avg_dist_dist_tibble <- Avg_dist_matrix %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample) %>%
+    filter(name < sample)
+  
+  Bray_list[[Bray_list_length+1]] <- relAbund_dist_matrix
+  names(Bray_list)[[Bray_list_length+1]] <- paste(Datasetname, "relAbund_dist_matrix", sep="_")
+
+  Bray_list[[Bray_list_length+2]] <- Avg_dist_matrix
+  names(Bray_list)[[Bray_list_length+2]] <- paste(Datasetname, "Avg_dist_matrix", sep="_")
+  
+  Bray_list[[Bray_list_length+3]] <- ps_Filter
+  names(Bray_list)[[Bray_list_length+3]] <- paste("ps_Filter", Datasetname, sep="_")
+  
+}
+
+pslist$BrayCurtis <- Bray_list
+
+```
+
+### 6.3.1 PCOA
+
+```{r}
+
+PCOA_list <- list()
+  for (Dataset in names(pslist$BrayCurtis)[grepl(
+    "OE_Avg_dist_matrix|GC_Avg_dist_matrix|SSU_Avg_dist_matrix|OE_relAbund_dist_matrix|GC_relAbund_dist_matrix|SSU_relAbund_dist_matrix|OEWF_Avg_dist_matrix|GCWF_Avg_dist_matrix", names(pslist$BrayCurtis))]) {
+  require(vegan)
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  
+  Datasetname      <- sub("_Avg_dist_matrix|_relAbund_dist_matrix", "", Dataset)
+
+  if (grepl("Avg_dist_matrix", Dataset)) {
+    BrayKind <- "avgdist" 
+    } else if (grepl("relAbund_dist_matrix", Dataset)) {
+    BrayKind <- "relabund_dist"
+    }
+  
+  Bray_list_species <- Bray_list[[Dataset]]
+  
+  PCOA_list_length <- length(PCOA_list)
+
+  COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in%
+                                          labels(Bray_list_species)]
+  set.seed(1)
+  pcoa <- cmdscale(Bray_list_species, eig=TRUE, add=TRUE)
+  positions <- pcoa$points
+  colnames(positions) <- c("pcoa1", "pcoa2")
+  percent_explained <- 100 * pcoa$eig / sum(pcoa$eig)
+  
+  pretty_pe <- format(round(percent_explained, digits =1), nsmall=1, trim=TRUE)
+
+  labels <- c(glue("PCo Axis 1 ({pretty_pe[1]}%)"),
+            glue("PCo Axis 2 ({pretty_pe[2]}%)"))
+
+
+  if (Datasetname == "SSU") {
+    # p <- positions %>%
+    #   as_tibble(rownames = "SampleID") %>%
+    #   left_join(SAMDF16S, by = c("SampleID" = "SampleID" )) %>%
+    #   #left_join(data.frame(sample_data(Bray_list$ps_Filter_OE)), by = c("SampleID" = "SampleID" )) %>%
+    #   ggplot(., aes(x=pcoa1, y=pcoa2, color=fSeason, shape=fSpecies)) +
+    #   geom_point(size=4) +
+    #   labs(x=labels[1], y=labels[2]) + 
+    #   #theme_bw() + 
+    #   theme(legend.position = "right") +
+    #   guides(colour = guide_legend(title.position="top", title.hjust = 0, title = "Season"),
+    #      shape = guide_legend(title.position="top", title.hjust = 0, title = "Location")) +
+    #   scale_color_manual(values = col.Palette$col.Palette.Season) + 
+    #   scale_fill_manual(values = col.Palette$col.Palette.Season) +
+    #   ggrepel::geom_text_repel(aes(label = fSpecies)) +
+    #   coord_fixed(sqrt(percent_explained[2] / percent_explained[1]))
+      
+      
+  p <- positions %>%
+    as_tibble(rownames = "SampleID") %>%
+    left_join(SAMDF16S, by = c("SampleID" = "SampleID" )) %>%
+    ggplot(aes(x=pcoa1, y=pcoa2,  shape=fSpecies)) +
+    geom_point(aes(color=fSeason), size=4) +
+    labs(x=labels[1], y=labels[2]) + 
+    theme(legend.position = "right") +
+    guides(colour = guide_legend(title.position="top", title.hjust = 0, title = "Season"),
+         shape = guide_legend(title.position="top", title.hjust = 0, title = "Species")) +
+    ggrepel::geom_text_repel(aes(label = fSpecies)) +
+    coord_fixed(sqrt(percent_explained[2] / percent_explained[1])) +
+    stat_ellipse(aes(fill=fSpecies), geom="polygon", alpha=0.25, colour = "black") +
+    scale_color_manual(values = col.Palette$col.Palette.Season) +
+    scale_fill_manual(values = col.Palette$col.Palette.Species)
+  
+
+    
+    
+    } else if (Datasetname %in% c("GCWF", "OEWF")) {
+  
+    p <- positions %>%
+    as_tibble(rownames = "SampleID") %>%
+    left_join(SAMDF16S, by = c("SampleID" = "SampleID" )) %>%
+    ggplot(., aes(x=pcoa1, y=pcoa2)) +
+    geom_point(size=4, aes(color=fSeason, shape=fLOC)) +
+    labs(x=labels[1], y=labels[2]) + 
+    theme(legend.position = "right") +
+    #guides(colour = guide_legend(title.position="top", title.hjust = 0, title = "Season"),
+    #     shape = guide_legend(title.position="top", title.hjust = 0, title = "Species")) +
+    #ggrepel::geom_text_repel(aes(label = SampleID)) +
+    coord_fixed(sqrt(percent_explained[2] / percent_explained[1])) +
+    stat_ellipse(aes(fill=fSpecies), geom="polygon", alpha=0.25, colour = "black") +
+    scale_color_manual(values = col.Palette$col.Palette.Season) + 
+    scale_fill_manual(values = col.Palette$col.Palette.Species) +
+    scale_shape_manual(values=c(15, 16, 17, 8, 25)) +
+      #ggrepel::geom_text_repel(aes(label = fSpecies))+
+    coord_fixed(sqrt(percent_explained[2] / percent_explained[1]))
+    
+    } else {
+     p <- positions %>%
+      as_tibble(rownames = "SampleID") %>%
+      left_join(SAMDF16S, by = c("SampleID" = "SampleID" )) %>%
+      #left_join(data.frame(sample_data(Bray_list$ps_Filter_OE)), by = c("SampleID" = "SampleID" )) %>%
+      ggplot(., aes(x=pcoa1, y=pcoa2, color=fSeason, shape=fLOC)) +
+      geom_point(size=4) +
+      labs(x=labels[1], y=labels[2]) + 
+      theme_bw()+ theme(legend.position = "right") +
+      guides(colour = guide_legend(title.position="top", title.hjust = 0, title = "Season"),
+         shape = guide_legend(title.position="top", title.hjust = 0, title = "Location")) +
+      scale_color_manual(values = col.Palette$col.Palette.Season) + 
+      scale_fill_manual(values = col.Palette$col.Palette.Season) +
+      scale_shape_manual(values=c(15, 16, 17, 8, 25)) +
+      ggrepel::geom_text_repel(aes(label = fLOC))+
+      coord_fixed(sqrt(percent_explained[2] / percent_explained[1]))
+     
+  }
+  
+    #p <- p + annotate("text", x = Inf, y = Inf, hjust = 1, vjust = 1, size = 5,
+    #       label = paste("Stress =", round(stress, 3)), 
+    #       color = c("darkred", "darkred", "darkred"),  fontface = "bold")
+               
+  
+  #p + theme(panel.grid = element_blank())
+  
+    p <- p + atheme +
+      theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=6), 
+        legend.text=element_text(size=6)) +
+      theme(
+        panel.grid.major = element_line(colour = "white"), 
+        panel.grid.minor = element_line(colour = "white"))
+    p <- p +  theme(legend.position = "bottom", legend.box = "horizontal")
+  
+
+   PCOA_plot <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+  
+   PCOA_plot <- plot_grid(PCOA_plot, ncol = 1)
+   #plot(PCOA_plot)
+   ggsave(PCOA_plot, filename = paste(paste(save_name, BrayKind, "PCOA", Datasetname, sep="_"), ".png", sep=""), 
+          path = pathPlots, device='png', dpi=300, width = 8,height = 7)
+  
+   PCOA_list[[PCOA_list_length+1]] <- PCOA_plot
+   names(PCOA_list)[[PCOA_list_length+1]] <- paste("PCOA",BrayKind, Datasetname, sep="_")
+  }
+
+PCOA_list$PCOA_avgdist_SSU
+
+```
+
+### 6.3.2 NMDS
+
+```{r}
+
+NMDS_list <- list()
+  for (Dataset in names(pslist$BrayCurtis)[grepl(
+    "OE_Avg_dist_matrix|GC_Avg_dist_matrix|SSU_Avg_dist_matrix|OE_relAbund_dist_matrix|GC_relAbund_dist_matrix|SSU_relAbund_dist_matrix", names(pslist$BrayCurtis))]) {
+  require(vegan)
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  
+  Datasetname      <- sub("_Avg_dist_matrix|_relAbund_dist_matrix", "", Dataset)
+
+  if (grepl("Avg_dist_matrix", Dataset)) {
+    BrayKind <- "avgdist" 
+    } else if (grepl("relAbund_dist_matrix", Dataset)) {
+    BrayKind <- "relabund_dist"
+    }
+  
+  Bray_list_species <- Bray_list[[Dataset]]
+  
+  NMDS_list_length <- length(NMDS_list)
+
+  COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in%
+                                          labels(Bray_list_species)]
+  set.seed(1)
+  nmds <- metaMDS(Bray_list_species)
+  stress <- nmds$stress
+  
+  if (Datasetname == "SSU") {
+    p <- scores(nmds) %>%
+      as_tibble(rownames = "samples") %>%
+      left_join(SAMDF16S, by = c("samples" = "SampleID" )) %>%
+      ggplot(aes(x=NMDS1, y=NMDS2, color=fSeason, shape=fLOC)) +
+      geom_point(size=4)+ 
+      scale_color_manual(values = col.Palette$col.Palette.Season) + 
+      scale_fill_manual(values = col.Palette$col.Palette.Season) +
+      ggrepel::geom_text_repel(aes(label = fSpecies))
+  } else {
+    p <- scores(nmds) %>%
+      as_tibble(rownames = "samples") %>%
+      left_join(SAMDF16S, by = c("samples" = "SampleID" )) %>%
+      ggplot(aes(x=NMDS1, y=NMDS2, color=fSeason, shape=fLOC)) +
+      geom_point(size=4)+ 
+      scale_color_manual(values = col.Palette$col.Palette.Season) + 
+      scale_fill_manual(values = col.Palette$col.Palette.Season) +
+      scale_shape_manual(values=c(15, 16, 17, 8, 25)) +
+      ggrepel::geom_text_repel(aes(label = fLOC))
+  }
+  
+    p <- p + annotate("text", x = Inf, y = Inf, hjust = 1, vjust = 1, size = 5,
+           label = paste("Stress =", round(stress, 3)), 
+           color = c("darkred", "darkred", "darkred"),  fontface = "bold")
+               
+    p <- p + atheme +
+      theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=6), 
+        legend.text=element_text(size=6)) +
+      theme(
+        panel.grid.major = element_line(colour = "white"), 
+        panel.grid.minor = element_line(colour = "white"))
+  
+
+   NMDS_plot <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+  
+   NMDS_plot <- plot_grid(NMDS_plot, ncol = 1)
+   #plot(NMDS_plot)
+   ggsave(NMDS_plot, filename = paste(paste(save_name, BrayKind, "NMDS", Datasetname, sep="_"), ".png", sep=""), 
+          path = pathPlots, device='png', dpi=300, width = 8,height = 7)
+  
+   NMDS_list[[NMDS_list_length+1]] <- NMDS_plot
+   names(NMDS_list)[[NMDS_list_length+1]] <- paste("NMDS",BrayKind, Datasetname, sep="_")
+  }
+
+```
+
+### 6.3.3 PERMANOVA 
+
+https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+While PCA is an exploratory data visualization tool, we can test whether the samples cluster beyond that expected by sampling variability using permutational multivariate analysis of variance (PERMANOVA). It does this by partitioning the sums of squares for the within- and between-cluster components using the concept of centroids. Many permutations of the data (i.e. random shuffling) are used to generate the null distribution. The test from ADONIS can be confounded by differences in dispersion (or spread)…so we want to check this as well.
+
+```{r, message=FALSE, warning=FALSE}
+
+  #########################################################
+  #Test null hypotheses for non-rarified and rarified data#
+  #########################################################
+
+  # treatment_sample <- sample(treatment_size)
+  # adonis2(Bray_list[[paste(Datasetname, "relAbund_dist_matrix", sep="_")]]~ treatment_sample)$`Pr(>F)`[1]
+  # #0.269 
+  # adonis2(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]]~ treatment_sample)$`Pr(>F)`[1]
+  # #0.275
+  
+  #####################
+  #Fish vs Waterfilter#
+  #####################
+PERMANOVA_list <- list()
+  for (Dataset in names(pslist)[grepl("ps_OEWF|ps_GCWF", names(pslist))]){
+   require(vegan)
+  
+    PERMANOVA_list[[Dataset]] <- list()
+    Datasetname <- sub("ps_", "", Dataset)
+    Bray_list <- pslist$BrayCurtis
+    #Other possibility#
+    #Generate distance matrix
+    #ps_clr <- microbiome::transform(pslist[[Dataset]], "clr")
+    #Generate distance matrix
+    #clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+    #ADONIS test
+    
+    print(Datasetname)
+    ADONIS <- vegan::adonis2(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]] ~ sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Kind)
+    print(ADONIS)
+    #Dispersion test and plot
+    dispr <- vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Kind)
+  
+    dispr
+    plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+    boxplot(dispr, main = "", xlab = "")
+    vegan::permutest(dispr)
+    BetaDisper <- anova(vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Kind))
+    #Cant trust Adonis for both
+    
+   if (BetaDisper$`Pr(>F)`[1] > 0.05) {
+     print(Datasetname)
+     print("Trust Adonis")
+   } else {
+     print(Datasetname)
+     print("Can not trust Adonis")
+   }
+    print(BetaDisper )
+    print("Next analysis")
+    PERMANOVA_list[[Dataset]][[paste("Kind")]]<- ADONIS
+  }
+  
+  ##############################
+  #Fish Seasonal vs Waterfilter#
+  ##############################
+  for (Dataset in names(pslist)[grepl("ps_OEWF|ps_GCWF", names(pslist))]){
+   require(vegan)
+  
+    PERMANOVA_list[[paste(Dataset, Season, sep="_")]] <- list()
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    #Other possibility#
+    #Generate distance matrix
+    #ps_clr <- microbiome::transform(pslist[[Dataset]], "clr")
+    #Generate distance matrix
+    #clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+    #ADONIS test
+    
+    metadata <- sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])
+    
+    print(Datasetname)
+    ADONIS <- vegan::adonis2(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]] ~ gsub(" \\d+$", "", metadata$Reps))
+    print(ADONIS)
+    #Dispersion test and plot
+    dispr <- vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], gsub(" \\d+$", "", metadata$Reps))
+  
+    dispr
+    plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+    boxplot(dispr, main = "", xlab = "")
+    vegan::permutest(dispr)
+    BetaDisper <- anova(vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], gsub(" \\d+$", "", metadata$Reps)))
+    #Cant trust Adonis for both
+    
+   if (BetaDisper$`Pr(>F)`[1] > 0.05) {
+     print(Datasetname)
+     print("Trust Adonis")
+   } else {
+     print(Datasetname)
+     print("Can not trust Adonis")
+   }
+    print(BetaDisper )
+    print("Next analysis")
+    PERMANOVA_list[[paste(Dataset, Season, sep="_")]][[paste("ADONIS")]] <- list()
+    PERMANOVA_list[[paste(Dataset, Season, sep="_")]][[paste("ADONIS")]]<- ADONIS
+    
+    print(Datasetname)
+
+    metadata$RepsSeason <- gsub(" \\d+$", "", metadata$Reps)
+    dist_matrix <- Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]]
+    PairwiseADONIS <- pairwiseAdonis::pairwise.adonis2(dist_matrix~RepsSeason, data=data.frame(metadata))       
+                        
+    PERMANOVA_list[[paste(Dataset, Season, sep="_")]][[paste("Pairwise")]] <- list()
+    PERMANOVA_list[[paste(Dataset, Season, sep="_")]][[paste("Pairwise")]]<- PairwiseADONIS
+     
+    PairwiseADONIS_df <- list()
+      for (i in names(PairwiseADONIS[-1])) {
+      PairwiseADONIS_df[[i]][1] <- PairwiseADONIS[[i]]$`Pr(>F)`[1]
+      PairwiseADONIS_df[[i]][2] <- PairwiseADONIS[[i]]$`F`[1]
+      #names(PairwiseADONIS_df)[[i]] <- i
+      }
+
+  PairwiseADONIS_df <- list()
+  for (i in names(PairwiseADONIS)[-1]) {
+    PairwiseADONIS_df[[i]] <- data.frame(
+      p_value = PairwiseADONIS[[i]]$`Pr(>F)`[1],
+      F_statistic = PairwiseADONIS[[i]]$`F`[1]
+    )
+  }
+  PairwiseADONIS_df <- do.call(rbind, PairwiseADONIS_df)
+  print(PairwiseADONIS_df)
+}
+    
+  
+  df <- PERMANOVA_list$ps_OEWF_SU_AU_WI_SP$Pairwise
+    PairwiseADONIS_df <- list()
+  for (i in names(df)[-1]) {
+    PairwiseADONIS_df[[i]] <- data.frame(
+      p_value = df[[i]]$`Pr(>F)`[1],
+      F_statistic = df[[i]]$`F`[1]
+    )
+  }
+  PairwiseADONIS_df <- do.call(rbind, PairwiseADONIS_df)
+  PairwiseADONIS_df[grepl("WF", rownames(PairwiseADONIS_df)),]
+  
+  
+  df <- PERMANOVA_list$ps_GCWF_SU_AU_WI_SP$Pairwise
+    PairwiseADONIS_df <- list()
+  for (i in names(df)[-1]) {
+    PairwiseADONIS_df[[i]] <- data.frame(
+      p_value = df[[i]]$`Pr(>F)`[1],
+      F_statistic = df[[i]]$`F`[1]
+    )
+  }
+  PairwiseADONIS_df <- do.call(rbind, PairwiseADONIS_df)
+  PairwiseADONIS_df[grepl("WF", rownames(PairwiseADONIS_df)),]
+  
+  ##################
+  #For Fish vs Fish#
+  ##################
+  #Pairwise Test
+  for (Dataset in names(pslist)[grepl("ps_Fish", names(pslist))]){
+   require(vegan)
+  
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    #Other Approach
+    #Generate distance matrix
+    # ps_clr <- microbiome::transform(pslist[[Dataset]], "clr")
+    # set.seed(123)
+    # clr_dist_matrix <- phyloseq::distance(ps_clr, method ="euclidean")
+    
+    print(Datasetname)
+    ADONIS <- vegan::adonis2(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]] ~ sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Species)
+    print(ADONIS)
+
+    dispr <- vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Species)
+    
+    dispr
+    plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+    boxplot(dispr, main = "", xlab = "")
+    vegan::permutest(dispr)
+  BetaDisper <- anova(vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Species))
+    #Cant trust Adonis for both
+
+   if (BetaDisper$`Pr(>F)`[1] > 0.05) {
+     print(Datasetname)
+     print("Trust Adonis")
+   } else {
+     print(Datasetname)
+     print("Can not trust Adonis")
+   }
+    print(BetaDisper )
+    print("Next analysis")
+    PERMANOVA_list[[Dataset]][[paste("Species")]]<- ADONIS
+  
+}
+
+  ###################
+  #For Fish Seasonal#
+  ###################
+  #Pairwise Test
+  for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_OE|ps_GC", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")){
+   require(vegan)
+    PERMANOVA_list[[Dataset]][[paste("Season")]] <- list()
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    #Other Approach
+    #Generate distance matrix
+    # ps_clr <- microbiome::transform(pslist[[Dataset]], "clr")
+    # set.seed(123)
+    # clr_dist_matrix <- phyloseq::distance(ps_clr, method ="euclidean")
+    
+    print(Datasetname)
+    ADONIS <- vegan::adonis2(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]] ~ sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Season)
+    print(ADONIS)
+
+    dispr <- vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Season)
+    
+    dispr
+    plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+    boxplot(dispr, main = "", xlab = "")
+    vegan::permutest(dispr)
+  BetaDisper <- anova(vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]], sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$Season))
+    #Cant trust Adonis for both
+
+   if (BetaDisper$`Pr(>F)`[1] > 0.05) {
+     print(Datasetname)
+     print("Trust Adonis")
+   } else {
+     print(Datasetname)
+     print("Can not trust Adonis")
+   }
+    print(BetaDisper )
+    print("Next analysis")
+    
+    PERMANOVA_list[[Dataset]][[paste("Season")]][[paste("Adonis")]] <- list()
+    PERMANOVA_list[[Dataset]][[paste("Season")]][[paste("Adonis")]] <- ADONIS
+  
+    metadata <- sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])
+    dist_matrix <- Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]]
+    print(Datasetname)
+    PairwiseADONIS <- pairwiseAdonis::pairwise.adonis2(dist_matrix~Season,data=data.frame(metadata))       
+    PairwiseADONIS                               
+    PERMANOVA_list[[Dataset]][[paste("Season")]][[paste("Pairwise")]]<-PairwiseADONIS
+     
+  }
+  
+  ##################
+  #For Fish Spatial#
+  ##################
+  for (Dataset in names(pslist)[!grepl("WF", names(pslist))][grepl("ps_OE|ps_GC", names(pslist)[!grepl("WF", names(pslist))])]){
+   require(vegan)
+    PERMANOVA_list[[Dataset]][[paste("Replicates")]] <- list()
+    Datasetname <- sub("ps_", "", Dataset)
+    
+    #Other Approach
+    #Generate distance matrix
+    # ps_clr <- microbiome::transform(pslist[[Dataset]], "clr")
+    # set.seed(123)
+    # clr_dist_matrix <- phyloseq::distance(ps_clr, method ="euclidean")
+    
+    print(Datasetname)
+    ADONIS <- vegan::adonis2(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]] ~
+              sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$fReplicates)
+    print(ADONIS)
+
+    dispr <- vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]],
+                    sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$fReplicates)
+    
+    dispr
+    plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+    boxplot(dispr, main = "", xlab = "")
+    vegan::permutest(dispr)
+  BetaDisper <- anova(vegan::betadisper(Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]],
+                sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])$fReplicates))
+    #Cant trust Adonis for both
+
+   if (BetaDisper$`Pr(>F)`[1] > 0.05) {
+     print(Datasetname)
+     print("Trust Adonis")
+   } else {
+     print(Datasetname)
+     print("Can not trust Adonis")
+   }
+    print(BetaDisper )
+    print("Next analysis")
+    
+    PERMANOVA_list[[Dataset]][[paste("Replicates")]][[paste("Adonis")]] <- list()
+    PERMANOVA_list[[Dataset]][[paste("Replicates")]][[paste("Adonis")]] <- ADONIS
+  
+    metadata <- sample_data(Bray_list[[paste("ps_Filter", Datasetname, sep="_")]])
+    dist_matrix <- Bray_list[[paste(Datasetname, "Avg_dist_matrix", sep="_")]]
+    
+    PairwiseADONIS <- pairwiseAdonis::pairwise.adonis2(dist_matrix~fReplicates,data=data.frame(metadata))       
+    PERMANOVA_list[[Dataset]][[paste("Replicates")]][[paste("Pairwise")]] <- list()
+    PERMANOVA_list[[Dataset]][[paste("Replicates")]][[paste("Pairwise")]]<- PairwiseADONIS
+    
+  PairwiseADONIS_df <- list()
+  for (i in names(PairwiseADONIS[-1])) {
+    PairwiseADONIS_df[[i]] <- PairwiseADONIS[[i]]$`Pr(>F)`[1]
+    #names(PairwiseADONIS_df)[[i]] <- i
+  }
+
+  PairwiseADONIS_df <- PairwiseADONIS_df %>%
+    do.call(rbind, .) %>%      
+    as.data.frame() %>%   
+    tibble::rownames_to_column(var = "Comparison") %>%  
+    dplyr::rename(p=2) %>%                       
+    filter(p < 0.05)
+  print(PairwiseADONIS_df)
+
+}
+
+pslist$PERMANOVA_list <- PERMANOVA_list
+
+
+```
+
+https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+Checking by all sample types, we get a significant result (0.002) from the betadisper test. This tells us that there is a difference between group dispersions, which means that we can’t trust the results of an adonis (permutational anova) test on this, because the assumption of homogenous within-group disperions is not met. This isn’t all that surprising considering how different the water and biofilm samples are from the rocks.
+
+An important note: An NMDS is just a visualization technique, and is not a statistical assessment of sample separation or correlation. For this you should run a statistical test, like an ANOSIM test for categorical variables, or a Mantel test for continuous variables. Other ordination techniques like PCA, CA, CCA, RDA, etc, may be more useful to you if you want your axes to be meaningful, or if you want to talk about variation partitioning.
+
+### 6.3.4 dbRDA / CAP
+
+distance based RDA automatically removing Oxygen values for multicollinearity with almost all other abiotic measurements, further there is an automatic exclusion of other multicollinear factors, inspect the output datasets instead of trusting the RDA plot from scratch
+
+```{r}
+RDA_list <- list()
+for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")) {
+  
+  require(phyloseq)
+  require(vegan)
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(ggordiplots)
+  
+  Datasetname <- sub("ps_", "", Dataset)
+  ps <- pslist[[Dataset]]
+  RDA_list_length <- length(RDA_list)
+  
+  GroupingVariables <- c("fSeason", "fLOC")
+  
+  if (Datasetname %in% c("GC", "OE")) {
+    
+    Traits <- c(
+      "Salinity", "Temperature",
+      "Age", "FCF", "HSI", "SSI", "GSI", "FillLevel", 
+      "NH4",  "NO2", "NO3", "O2", "PO4", "pH", "SPM", "TOC",
+      GroupingVariables)
+      print(Traits)
+    } else if (Datasetname %in% c("WF")) {
+    Traits <- c(
+      "Salinity", "Temperature", "NH4",  "NO2", "NO3", "O2", "PO4", "pH", "SPM", "TOC", GroupingVariables)
+    print(Traits)
+  
+    } else {print("error")}
+  
+    if (Datasetname %in% c("GC", "OE")) {
+      print(paste("Samples removed for low frequency below 5000 seqs in;", Dataset, sep = ""))
+      print(which(rowSums(otu_table(ps)) < 5000))
+      ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+    } else if (Datasetname %in% c("WF")) {
+      print(paste("No Waterfiler Samples removed ;", Dataset, sep = ""))
+      ps_Filter <- ps
+    }
+    
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  Include <- Traits[Traits %!in% GroupingVariables]
+
+  df_Traits <- data.frame(sample_data(ps_Filter))
+
+  df_Traits <- df_Traits[names(df_Traits) %in% Traits]
+
+  df_Include <- df_Traits[names(df_Traits) %in% Include]
+  
+  print("NAs in TraitData")
+  print(table(is.na(df_Include)))
+  
+  print((df_Include[!complete.cases(df_Include), ]))
+  
+  df_Include  <- df_Include[complete.cases(df_Include), ]
+  
+  df_Traits  <- df_Traits[complete.cases(df_Traits), ]
+  dim(df_Traits)
+  
+  df_Include <- decostand(df_Include, method='standardize')
+  dim(df_Include)
+  
+  ps_Filter <- prune_samples(sample_names(ps_Filter)[sample_names(ps_Filter) %in%
+               rownames(df_Include[complete.cases(df_Include), ])], ps_Filter)
+
+  ##################################################
+  #Determine which variables are useful for the plot#
+  ##################################################
+  abund_table <- as.data.frame(otu_table(ps_Filter, taxa_are_rows = FALSE)) 
+  print("Smallest Group for avgdist")
+  smallest_group <- min(rowSums(otu_table(ps_Filter)))
+  print(smallest_group)
+  avgdist_abund_table  <- avgdist(abund_table, dmethod = "bray", sample = smallest_group)
+  dpRDA_results <- capscale(avgdist_abund_table ~ ., data=df_Include, distance='bray')
+  
+  abund_table.adonis <- vegan::adonis2(avgdist_abund_table ~ ., data=df_Include)
+  print(paste("PERMANOVA", Datasetname))
+  print(abund_table.adonis)
+  abund_table.adonis.sig <- abund_table.adonis[!is.na(abund_table.adonis$`Pr(>F)`),]
+  abund_table.adonis.sig <- abund_table.adonis.sig[abund_table.adonis.sig$`Pr(>F)` < 0.05,]
+  PERMANOVAsig.variables <- row.names(abund_table.adonis.sig)
+  
+  ###########################################################################
+  #Compute Distance-based Redundancy Analysis based on average bray distance#
+  ###########################################################################
+  dbRDA_results <- capscale(avgdist_abund_table ~ ., data=df_Include, distance='bray')
+
+  dbrda_plot = plot(dpRDA_results, xlab=ord_labels(dpRDA_results)[1], ylab=ord_labels(dpRDA_results)[2])
+  anova(dbRDA_results) # permutation test of statistical significance
+
+  ####################
+  #Variable selection#
+  ####################
+    
+    ######################
+    #Check for redundancy#
+    ######################
+    print("VIF")
+    print(sort(vif.cca(dpRDA_results))) # calculate VIF, scores >10 are redundant 
+    vars.envfit <- names(which(vif.cca(dpRDA_results) <= 10))
+
+    ##################
+    # model selection#
+    ##################
+    rda1 <- capscale(avgdist_abund_table ~ ., data=df_Include) # set up full and null models for 'ordistep' full model
+    rda0 <- capscale(avgdist_abund_table ~ 1, data=df_Include) # intercept-only (null) model
+    step.env <- ordistep(rda0, scope=formula(rda1), direction='both')  
+    #### # perform forward and backward selection of explanatory variables
+    print(paste("Ordisep", Datasetname))
+    print(step.env$anova)
+    vars.ordistep <- gsub('^. ', '', rownames(step.env$anova)) # get variable names from 'ordistep'   and 'envfit' results
+  
+    Significant <- unique(vars.ordistep)
+    df_Significant <- df_Traits[names(df_Traits) %in% vars.ordistep]
+    
+    #First check of O2 is collinear, otherwise VIF goes up for many values 
+    if ("O2" %in% names(which(vif.cca(dbRDA_results) > 10))) {
+      print(paste("Removing O2 for Collinearity"))
+      df_Significant <- df_Significant[, !names(df_Significant) %in% c("O2")]
+     }
+    
+    # Perform the same RDA but with fewer variables (selected/relevant variables)
+    dbRDA_results <- capscale(avgdist_abund_table ~ ., data=df_Significant, distance='bray')
+    summary(dbRDA_results, display=NULL) # summary of the results
+    anova(dbRDA_results) # permutation test of statistical significance
+    
+    print("VIF")
+    print(sort(vif.cca(dbRDA_results))) # calculate VIF, scores >10 are redundant 
+    vars.envfit <- names(which(vif.cca(dbRDA_results) <= 10))
+
+    if (length(names(which(vif.cca(dbRDA_results) > 10))) > 0) {
+      print(paste("Removing", names(which(vif.cca(dbRDA_results) > 10)), "for Collinearity"))
+    df_Significant <- df_Significant[, !names(df_Significant) %in% names(which(vif.cca(dbRDA_results) > 10))]
+    }
+
+    # Perform the same RDA but with fewer variables (selected/relevant variables)
+    dbRDA_results <- capscale(avgdist_abund_table ~ ., data=df_Significant, distance='bray')
+    summary(dbRDA_results, display=NULL) # summary of the results
+    anova(dbRDA_results) # permutation test of statistical significance
+    envfit_res <- envfit(dbRDA_results, df_Significant, permutations = 999, na.rm = TRUE)
+  
+    RDA_list[[RDA_list_length+1]] <- dbRDA_results
+    names(RDA_list)[[RDA_list_length+1]] <- paste("dbRDA_results", Datasetname, sep="_")
+    
+    RDA_list[[RDA_list_length+2]] <- step.env
+    names(RDA_list)[[RDA_list_length+2]] <- paste("ordistep_results", Datasetname, sep="_")
+    
+    RDA_list[[RDA_list_length+3]] <- abund_table.adonis.sig
+    names(RDA_list)[[RDA_list_length+3]] <- paste("PERMANOVA_results", Datasetname, sep="_")
+    
+    RDA_list[[RDA_list_length+4]] <- envfit_res
+    names(RDA_list)[[RDA_list_length+4]] <- paste("EnvFit_results", Datasetname, sep="_")
+    
+    # Set up dataframes for plotting the results
+    scores_df <- cbind(df_Traits, scores(dbRDA_results, display="sites"))
+    #spp_dpRDA <- cbind(data.frame(tax_table(ps_Filter)), vegan::scores(dbRDA_results, display="species"))
+    scores_dbRDA <- vegan::scores(dbRDA_results, display=c("sp","wa","lc","bp","cn"))
+  
+    ##########
+    #Plot RDA#
+    ##########
+    tryCatch({
+    COL <- col.Palette$col.Palette.Season[names(col.Palette$col.Palette.Season) %in% sample_data(ps)$Season]
+  
+    p <-ggplot(scores_df, aes(x=CAP1, y=CAP2, color=fSeason, shape=fLOC)) + #, shape=RepsSpecs
+        ggtitle (paste(Datasetname, "RDA"))+
+        scale_color_manual(values = COL) + 
+        scale_fill_manual(values = COL) +
+        geom_point(size=4.5)
+
+      if (Datasetname %in% c("GC")) {
+      p <- p + scale_shape_manual(values=c(16, 17, 8, 25)) 
+      } else if (Datasetname %in% c("OE", "WF")) {
+      p <- p + scale_shape_manual(values=c(15, 16, 17, 8, 25)) 
+      }
+      
+      #p <- p + ggrepel::geom_text_repel(aes(label = fLOC))
+    
+      multiplier <- vegan:::ordiArrowMul(scores_dbRDA$biplot)
+      df_arrows <- scores_dbRDA$biplot*multiplier
+      colnames(df_arrows)<-c("x","y")
+      df_arrows=as.data.frame(df_arrows)
+    
+      p <- p + geom_segment(data=df_arrows,inherit.aes=F, mapping=(aes(x = 0, y = 0, xend = x, yend = y)),
+                            arrow = arrow(length = unit(0.2, "cm")),color="grey60",alpha=0.8) +
+      geom_text_repel(data=as.data.frame(df_arrows*1.2), inherit.aes=F, mapping=aes(x, y, label =
+                      rownames(df_arrows)),color="grey20",alpha=0.99, size = 6)
+      
+      p <- p + atheme +
+      theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=10), 
+        legend.text=element_text(size=10)) +
+    theme(
+        panel.grid.major = element_line(colour = "white"), 
+        panel.grid.minor = element_line(colour = "white"))
+  
+    # add in Percent to Axis lables 
+    p <- p + xlab(paste("RDA1", sub("CAP1", "", ord_labels(dbRDA_results)[1]))) + 
+         ylab(paste("RDA2", sub("CAP2", "", ord_labels(dbRDA_results)[2]))) +
+      theme(
+        axis.title.x.bottom = element_text(size=12,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+    
+    # p <- p + annotate("text", x = Inf, y = Inf, hjust = 1, vjust = 1, size = 5,
+    #        label = paste(
+    #          paste(
+    #             "p:",   pslist$PERMANOVA_list[[Dataset]]$Season$Adonis$`Pr(>F)`[1]), 
+    #         
+    #           paste(
+    #            "DF:", pslist$PERMANOVA_list[[Dataset]]$Season$Adonis$Df[3]),
+    #          
+    #          paste(
+    #            "F:",round(pslist$PERMANOVA_list[[Dataset]]$Season$Adonis$F[1])), 
+    #          sep = "\n"), 
+    #        color = c("darkred", "darkred", "darkred"),  fontface = "bold")
+
+    RDA_plot <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+
+    ggsave(RDA_plot, filename = paste(paste(save_name, "dbRDA", Datasetname, sep="_"), ".png", sep=""), 
+          path = pathPlots, device='png', dpi=300, width = 7,height = 5)
+    
+    },error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+    plot(RDA_plot)
+    RDA_list[[RDA_list_length+5]] <- RDA_plot
+    names(RDA_list)[[RDA_list_length+5]] <- paste("dbRDA", Datasetname, sep="_")
+  }
+
+pslist$RDA_list <- RDA_list
+print(sort(vif.cca(RDA_list$dbRDA_results_OE)))
+print(sort(vif.cca(RDA_list$dbRDA_results_GC)))
+
+
+
+#Export EnvFit Results
+for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")) {
+  Datasetname <- sub("ps_", "", Dataset)
+  
+  EnvFit_results<- as.data.frame(
+    cbind(round(pslist$RDA_list[[paste("EnvFit_results", Datasetname, sep="_")]]$vectors$r, digits=3), 
+    round(pslist$RDA_list[[paste("EnvFit_results", Datasetname, sep="_")]]$vectors$pvals, digits=3))
+    ) %>% 
+    setNames(c("R2", "P"))
+
+  write.csv2(EnvFit_results, paste0(file.path(path_Output_16S, paste(paste(save_name, 
+            paste("EnvFit_results", sep=""),  Datasetname, sep="_"),".csv", sep=""))))
+}
+
+```
+
+
+### 6.3.5 Mantel Test 
+
+https://jkzorz.github.io/2019/07/08/mantel-test.html
+Mantel tests are correlation tests that determine the correlation between two matrices (rather than two variables). When using the test for microbial ecology, the matrices are often distance/dissimilarity matrices with corresponding positions (i.e. samples in the same order in both matrices). In order to calculate the correlation, the matrix values of both matrices are ‘unfolded’ into long column vectors, which are then used to determine correlation. Permutations of one matrix are used to determine significance. Learn more about Mantel tests here.
+
+```{r}
+#########################   
+#Fish_OTU vs Environment#
+#########################
+#based in the avgdist matrix
+Mantel_list <- list()
+  for (Dataset in names(pslist$BrayCurtis)[grepl("OE_Avg_dist_matrix|GC_Avg_dist_matrix", names(pslist$BrayCurtis ))]) {
+  
+  Mantel_list_length <- length(Mantel_list)
+  Datasetname      <- sub("_Avg_dist_matrix", "", Dataset)
+  ps <- pslist[[paste("ps", Datasetname, sep="_")]]
+
+  ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+  
+  metadata <- as.data.frame(sample_data(ps_Filter))
+  metadata <- metadata[,names(metadata) %in% c("SampleID", "Temperature", "Salinity", "O2", "SPM", "PO4", "NH4", "NO3", "NO2")]
+
+
+  dist_tibble <- pslist$BrayCurtis[[Dataset]] %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample)
+
+  mantel_function = function(species, parameter){
+  
+  rare_dist_matrix <- dist_tibble %>% 
+    left_join(., metadata, by = c("sample" = "SampleID"))%>% 
+    left_join(., metadata, by = c("name" = "SampleID")) %>% 
+    select(sample, name, value) %>%
+    pivot_wider(names_from = name, values_from = value) %>% 
+    select(-sample) %>% 
+    as.dist()  
+  
+  env_dist <- dist_tibble %>% 
+    left_join(., metadata, by = c("sample" = "SampleID")) %>% 
+    left_join(., metadata, by = c("name" = "SampleID")) %>% 
+    select(sample, paste0(parameter,".x")) %>%
+    unique() %>%
+    column_to_rownames("sample") %>%
+    dist(method="euclidean")
+  
+  abund_temp = mantel(rare_dist_matrix, env_dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+  cbind(species=species, env=parameter, mantel=abund_temp$statistic, sig=abund_temp$signif)
+}
+
+  
+  
+  Env.out = data.frame(species=NA, env=NA, mantel=NA, sig=NA)
+  species=Datasetname
+  envs=c("Temperature", "Salinity", "O2", "SPM", "PO4", "NH4", "NO3", "NO2")
+  for(Dat in species){
+    for(params in envs)
+      Env.out <- rbind(Env.out, mantel_function(species = Dat, parameter = params))
+  }
+  Mantel_list[[Mantel_list_length+1]] <- Env.out
+  names(Mantel_list)[[Mantel_list_length+1]] <- paste(Datasetname, "Env", sep="_")
+}  
+
+########################   
+#Fish_OTU vs Physiology#
+########################
+#based in the avgdist matrix
+for (Dataset in names(pslist$BrayCurtis)[grepl("OE_Avg_dist_matrix|GC_Avg_dist_matrix", names(pslist$BrayCurtis))]) {
+  
+  Mantel_list_length <- length(Mantel_list)
+  Datasetname      <- sub("_Avg_dist_matrix", "", Dataset)
+  ps <- pslist[[paste("ps", Datasetname, sep="_")]]
+
+  ps_Filter <- subset_samples(ps, sample_sums(ps) > 5000)
+  
+  Phys <- c(
+   "Length", "Age", "FCF", "GSI", "HSI", "SSI", "FillLevel")
+
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  
+  df_Traits <- data.frame(sample_data(ps_Filter))
+  df_Traits <- df_Traits[names(df_Traits) %in% Phys]
+
+  print("NAs in TraitData")
+  print(table(is.na(df_Traits)))
+  
+  print((df_Traits[!complete.cases(df_Traits), ]))
+  
+  df_Traits  <- df_Traits[complete.cases(df_Traits), ]
+  
+  df_Traits <- decostand(df_Traits, method='standardize')
+  
+  ps_Filter <- prune_samples(sample_names(ps_Filter)[sample_names(ps_Filter) %in%
+               rownames(df_Traits[complete.cases(df_Traits), ])], ps_Filter)
+
+  ##################################################
+  #Determine which variables are useful for the plot#
+  ##################################################
+  abund_table <- as.data.frame(otu_table(ps_Filter, taxa_are_rows = FALSE)) 
+  smallest_group <- min(rowSums(otu_table(ps_Filter)))
+  avgdist_abund_table  <- avgdist(abund_table, dmethod = "bray", sample = smallest_group)
+  
+  dist_tibble <- avgdist_abund_table %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample)
+  
+  metadata <- as.data.frame(sample_data(ps_Filter))
+  metadata <- metadata[,names(metadata) %in% c("SampleID", Phys)]
+  
+  mantel_function = function(species, parameter){
+  
+  rare_dist_matrix <- dist_tibble %>% 
+    left_join(., metadata, by = c("sample" = "SampleID"))%>% 
+    left_join(., metadata, by = c("name" = "SampleID")) %>% 
+    select(sample, name, value) %>%
+    pivot_wider(names_from = name, values_from = value) %>% 
+    select(-sample) %>% 
+    as.dist()  
+  
+  env_dist <- dist_tibble %>% 
+    left_join(., metadata, by = c("sample" = "SampleID")) %>% 
+    left_join(., metadata, by = c("name" = "SampleID")) %>% 
+    select(sample, paste0(parameter,".x")) %>%
+    unique() %>%
+    column_to_rownames("sample") %>%
+    dist(method="euclidean")
+  
+  abund_temp = mantel(rare_dist_matrix, env_dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+  cbind(species=species, env=parameter, mantel=abund_temp$statistic, sig=abund_temp$signif)
+  }
+
+  Phys.out = data.frame(species=NA, env=NA, mantel=NA, sig=NA)
+  species=Datasetname
+  for(Dat in species){
+    for(params in Phys)
+      Phys.out <- rbind(Phys.out, mantel_function(species = Dat, parameter = params))
+  }
+  
+  Mantel_list[[Mantel_list_length+1]] <- Phys.out
+  names(Mantel_list)[[Mantel_list_length+1]] <- paste(Datasetname, "Phys", sep="_")
+}  
+
+#########################   
+#Water_OTU vs Environment#
+#########################
+#based in the avgdist matrix
+for (Dataset in names(pslist)[grepl("ps_WF", names(pslist))]) {
+  
+  Mantel_list_length <- length(Mantel_list)
+  Datasetname      <- sub("ps_", "", Dataset)
+  
+  ps <- pslist[[paste("ps", Datasetname, sep="_")]]
+  
+  ps_Filter <- ps
+  
+  print(paste("Samples removed for low frequency below 5000 seqs in;", Dataset, sep = ""))
+  print(which(rowSums(otu_table(ps)) < 5000))
+  print("Waterfilters will not be filtered")
+
+  Envs <- c(
+   "Temperature", "Salinity", "O2", "SPM", "PO4", "NH4", "NO3", "NO2")
+
+
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  
+  df_Traits <- data.frame(sample_data(ps_Filter))
+  df_Traits <- df_Traits[names(df_Traits) %in% Envs]
+
+  print("NAs in TraitData")
+  print(table(is.na(df_Traits)))
+  
+  print((df_Traits[!complete.cases(df_Traits), ]))
+  
+  df_Traits  <- df_Traits[complete.cases(df_Traits), ]
+  
+  df_Traits <- decostand(df_Traits, method='standardize')
+  
+  ps_Filter <- prune_samples(sample_names(ps_Filter)[sample_names(ps_Filter) %in%
+               rownames(df_Traits[complete.cases(df_Traits), ])], ps_Filter)
+
+  ##################################################
+  #Determine which variables are useful for the plot#
+  ##################################################
+  abund_table <- as.data.frame(otu_table(ps_Filter, taxa_are_rows = FALSE)) 
+  smallest_group <- min(rowSums(otu_table(ps_Filter)))
+  print("Smallest group for avgdist")
+  print(smallest_group)
+  avgdist_abund_table  <- avgdist(abund_table, dmethod = "bray", sample = smallest_group)
+  
+  dist_tibble <- avgdist_abund_table %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample)
+  
+  metadata <- as.data.frame(sample_data(ps_Filter))
+  metadata <- metadata[,names(metadata) %in% c("SampleID", Envs)]
+
+  mantel_function = function(species, parameter){
+  
+  rare_dist_matrix <- dist_tibble %>% 
+    left_join(., metadata, by = c("sample" = "SampleID"))%>% 
+    left_join(., metadata, by = c("name" = "SampleID")) %>% 
+    select(sample, name, value) %>%
+    pivot_wider(names_from = name, values_from = value) %>% 
+    select(-sample) %>% 
+    as.dist()  
+  
+  env_dist <- dist_tibble %>% 
+    left_join(., metadata, by = c("sample" = "SampleID")) %>% 
+    left_join(., metadata, by = c("name" = "SampleID")) %>% 
+    select(sample, paste0(parameter,".x")) %>%
+    unique() %>%
+    column_to_rownames("sample") %>%
+    dist(method="euclidean")
+  
+  abund_temp = mantel(rare_dist_matrix, env_dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+  cbind(species=species, env=parameter, mantel=abund_temp$statistic, sig=abund_temp$signif)
+}
+
+  Env.out = data.frame(species=NA, env=NA, mantel=NA, sig=NA)
+  species=Datasetname
+  envs=Envs
+  for(Dat in species){
+    for(params in envs)
+      Env.out <- rbind(Env.out, mantel_function(species = Dat, parameter = params))
+  }
+  Mantel_list[[Mantel_list_length+1]] <- Env.out
+  names(Mantel_list)[[Mantel_list_length+1]] <- paste(Datasetname, "Env", sep="_")
+}  
+
+#######################
+#Fish_ASV vs Water_ASV#
+#######################
+#-> Problem No Waterfilters for Autumn and SPTW
+#Distance Matrix Fish 
+#Distance Matrix Water
+  #->Elongate Water Matrix to fit the fish Matrix
+
+# for (Dataset in names(pslist$BrayCurtis)[grepl("OE_Avg_dist_matrix|GC_Avg_dist_matrix", names(pslist$BrayCurtis ))]) {
+#   
+#   Mantel_list_length <- length(Mantel_list)
+#   Datasetname      <- sub("_Avg_dist_matrix", "", Dataset)
+#   
+#   ps_Fish <- pslist[[paste("ps", Datasetname, sep="_")]]
+#   ps_Filter_Fish <- subset_samples(ps_Fish, sample_sums(ps_Fish) > 5000)
+#   
+#   ps_WF <- pslist[[paste("ps", "WF", sep="_")]]
+#   abund_table_WF <- data.frame(otu_table(ps_WF))
+# 
+#   ###########################
+#   #Avg_dist for Fish samples#
+#   ###########################
+#   abund_table_Fish <- as.data.frame(otu_table(ps_Filter_Fish, taxa_are_rows = FALSE)) 
+#   print(Datasetname)
+#   print("Smalles Group AVG dist")
+#   smallest_group_Fish <- min(rowSums(otu_table(ps_Filter_Fish)))
+#   print(smallest_group_Fish)
+#   avgdist_abund_table_Fish  <- avgdist(abund_table_Fish, dmethod = "bray", sample = smallest_group_Fish)
+#   
+#   dist_tibble_Fish <- avgdist_abund_table_Fish %>%
+#     as.matrix() %>%
+#     as_tibble(rownames="sample") %>%
+#     pivot_longer(-sample)
+# 
+#   ################################################
+#   #Avg_fist for artificially matched Watersamples#
+#   ################################################
+#   Names_Fish <- substring(sample_names(ps_Filter_Fish), first = 3)
+#   WF_mantel<- list()
+#   for (i in seq_along(Names_Fish)) {
+#         NAME  <- Names_Fish[i]
+#         NAME2 <- gsub("\\d+$", "", NAME)
+#         NAME3 <- substr(NAME2 , 1, nchar(NAME2 ) - 2)
+#         NAME4 <- substr(NAME3 , 1, nchar(NAME3 ) - 2)
+# 
+#          if (paste("WF", NAME3, "EB", sep="") %in% rownames(abund_table_WF)) {
+#             WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME3, "EB",
+#                                                                                  sep=""),]
+#           
+#         } else if (paste("WF", NAME3, "FL", sep="") %in% rownames(abund_table_WF)){
+#             WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME3, "FL",
+#                                                                                  sep=""),]
+#           
+#         } else if (paste("WF", NAME4, "TWEB", sep="") %in% rownames(abund_table_WF)){
+#             WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME4, "TWEB",
+#                                                                                  sep=""),]
+#           
+#         } else if (paste("WF", NAME4, "MLFL", sep="") %in% rownames(abund_table_WF)){
+#             WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME4, "MLFL",
+#                                                                                  sep=""),]
+#           
+#         } else {print(NA)}
+#         
+#         names(WF_mantel)[[i]] <- paste("WF", NAME, sep="")
+#     }
+# 
+#   WF_mantel_df <- do.call(rbind, WF_mantel)  
+# 
+#   print("Smallest Group AVG dist Waterfilter")
+#   smallest_group_WF <- min(rowSums(otu_table(ps_WF)))
+#   print(smallest_group_WF)
+#   avgdist_abund_table_WF  <- avgdist(WF_mantel_df , dmethod = "bray", sample = smallest_group_WF)
+#   
+#   #####################
+#   #Run the Mantel Test#
+#   #####################
+#   dist_tibble_Fish <- avgdist_abund_table_Fish %>%
+#     as.matrix() %>%
+#     as_tibble(rownames="sample") %>%
+#     pivot_longer(-sample)
+#   
+#   dist_tibble_WF <- avgdist_abund_table_WF %>%
+#     as.matrix() %>%
+#     as_tibble(rownames="sample") %>%
+#     pivot_longer(-sample)
+# 
+#   rare_dist_matrix_Fish <- dist_tibble_Fish %>% 
+#     left_join(., metadata, by = c("sample" = "SampleID"))%>% 
+#     left_join(., metadata, by = c("name" = "SampleID")) %>% 
+#     select(sample, name, value) %>%
+#     pivot_wider(names_from = name, values_from = value) %>% 
+#     select(-sample) %>% 
+#     as.dist()  
+#   
+#   rare_dist_matrix_WF <- dist_tibble_WF %>% 
+#     left_join(., metadata, by = c("sample" = "SampleID"))%>% 
+#     left_join(., metadata, by = c("name" = "SampleID")) %>% 
+#     select(sample, name, value) %>%
+#     pivot_wider(names_from = name, values_from = value) %>% 
+#     select(-sample) %>% 
+#     as.dist()  
+# 
+#   abund_temp <- 
+#     mantel(rare_dist_matrix_Fish, rare_dist_matrix_WF, method = "spearman", permutations = 9999, na.rm = TRUE)
+#   Env.out = data.frame(species=Datasetname, env="WF", mantel=abund_temp$statistic, sig=abund_temp$signif)
+#   
+#     Mantel_list[[Mantel_list_length+1]] <- Env.out
+#     names(Mantel_list)[[Mantel_list_length+1]] <- paste(Datasetname, "WF", sep="_")
+# }  
+
+
+##########################################################################
+#Without Autumn Samples as there is a large lack in matching watersamples#
+##########################################################################
+for (Dataset in names(pslist$BrayCurtis)[grepl("OE_Avg_dist_matrix|GC_Avg_dist_matrix", names(pslist$BrayCurtis ))]) {
+
+  Mantel_list_length <- length(Mantel_list)
+  Datasetname      <- sub("_Avg_dist_matrix", "", Dataset)
+
+  ps_Fish <- pslist[[paste("ps", Datasetname, sep="_")]]
+  ps_Filter_Fish <- subset_samples(ps_Fish, sample_sums(ps_Fish) > 5000)
+
+  ps_Filter_Fish <- prune_samples(!grepl("AU21BB|AU21MG|AU21ML|AU21SS|SU21TW|WI22TW|SP22TW", sample_names(ps_Filter_Fish)), ps_Filter_Fish)
+
+
+  ps_WF <- pslist[[paste("ps", "WF", sep="_")]]
+  abund_table_WF <- data.frame(otu_table(ps_WF))
+
+  ###########################
+  #Avg_dist for Fish samples#
+  ###########################
+  abund_table_Fish <- as.data.frame(otu_table(ps_Filter_Fish, taxa_are_rows = FALSE))
+  print(Datasetname)
+  print("Smalles Group AVG dist")
+  smallest_group_Fish <- min(rowSums(otu_table(ps_Filter_Fish)))
+  print(smallest_group_Fish)
+  avgdist_abund_table_Fish  <- avgdist(abund_table_Fish, dmethod = "bray", sample = smallest_group_Fish)
+
+  dist_tibble_Fish <- avgdist_abund_table_Fish %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample)
+
+  ################################################
+  #Avg_fist for artificially matched Watersamples#
+  ################################################
+  #we lack some watersamples matching with all fish data, as the bacterioplankton appears rather homogenous compared to the fish, we artificially match water samples from the closest time and space with the fish data
+  Names_Fish <- substring(sample_names(ps_Filter_Fish), first = 3)
+  WF_mantel<- list()
+  for (i in seq_along(Names_Fish)) {
+        NAME  <- Names_Fish[i]
+        NAME2 <- gsub("\\d+$", "", NAME)
+        NAME3 <- substr(NAME2 , 1, nchar(NAME2 ) - 2)
+        NAME4 <- substr(NAME3 , 1, nchar(NAME3 ) - 2)
+
+         if (paste("WF", NAME3, "EB", sep="") %in% rownames(abund_table_WF)) {
+            WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME3, "EB",
+                                                                                 sep=""),]
+
+        } else if (paste("WF", NAME3, "FL", sep="") %in% rownames(abund_table_WF)){
+            WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME3, "FL",
+                                                                                 sep=""),]
+
+        } else if (paste("WF", NAME4, "TWEB", sep="") %in% rownames(abund_table_WF)){
+            WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME4, "TWEB",
+                                                                                 sep=""),]
+
+        } else if (paste("WF", NAME4, "MLFL", sep="") %in% rownames(abund_table_WF)){
+            WF_mantel[[i]] <- abund_table_WF[rownames(abund_table_WF) %in% paste("WF", NAME4, "MLFL",
+                                                                                 sep=""),]
+
+        } else {print(NA)}
+
+        names(WF_mantel)[[i]] <- paste("WF", NAME, sep="")
+    }
+
+  WF_mantel_df <- do.call(rbind, WF_mantel)
+
+  print("Smallest Group AVG dist Waterfilter")
+  smallest_group_WF <- min(rowSums(otu_table(ps_WF)))
+  print(smallest_group_WF)
+  avgdist_abund_table_WF  <- avgdist(WF_mantel_df , dmethod = "bray", sample = smallest_group_WF)
+
+  #####################
+  #Run the Mantel Test#
+  #####################
+  dist_tibble_Fish <- avgdist_abund_table_Fish %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample)
+
+  dist_tibble_WF <- avgdist_abund_table_WF %>%
+    as.matrix() %>%
+    as_tibble(rownames="sample") %>%
+    pivot_longer(-sample)
+
+  rare_dist_matrix_Fish <- dist_tibble_Fish %>%
+    left_join(., metadata, by = c("sample" = "SampleID"))%>%
+    left_join(., metadata, by = c("name" = "SampleID")) %>%
+    select(sample, name, value) %>%
+    pivot_wider(names_from = name, values_from = value) %>%
+    select(-sample) %>%
+    as.dist()
+
+  rare_dist_matrix_WF <- dist_tibble_WF %>%
+    left_join(., metadata, by = c("sample" = "SampleID"))%>%
+    left_join(., metadata, by = c("name" = "SampleID")) %>%
+    select(sample, name, value) %>%
+    pivot_wider(names_from = name, values_from = value) %>%
+    select(-sample) %>%
+    as.dist()
+
+  abund_temp <-
+    mantel(rare_dist_matrix_Fish, rare_dist_matrix_WF, method = "spearman", permutations = 9999, na.rm = TRUE)
+  Env.out = data.frame(species=Datasetname, env="WF", mantel=abund_temp$statistic, sig=abund_temp$signif)
+
+    Mantel_list[[Mantel_list_length+1]] <- Env.out
+    names(Mantel_list)[[Mantel_list_length+1]] <- paste(Datasetname, "WF", "NoAutumn",sep="_")
+}
+
+pslist[["Mantel_list"]] <- Mantel_list
+
+# > Mantel_list$`OE_WF_MG-BB`
+#   species env    mantel   sig
+# 1      OE  WF 0.5307317 1e-04
+# > Mantel_list$`GC_WF_MG-BB`
+#   species env    mantel    sig
+# 1      GC  WF 0.3847558 0.0149
+
+# Mantel_list$`OE_WF_SS-ML`
+#   species env    mantel   sig
+# 1      OE  WF 0.2997895 1e-04
+# Mantel_list$`GC_WF_SS-ML`
+#   species env     mantel    sig
+# 1      GC  WF 0.07524223 0.1884
+
+
+#####################
+#Plot Mantel Results#
+#####################
+
+Mantel_list_clean <- lapply(Mantel_list, function(x) {
+  x[complete.cases(x), ]
+})
+Mantel_out <- as.data.frame(do.call(rbind, Mantel_list_clean))
+rownames(Mantel_out) <- NULL
+Mantel_out$sig <- as.numeric(Mantel_out$sig)
+Mantel_out$mantel <- as.numeric(Mantel_out$mantel)
+Mantel_out_sig <- Mantel_out %>% 
+  filter(sig < 0.05) 
+  
+vars  <- c("Salinity", "Temperature", "O2","SPM", "NO3", "NH4", "NO2", "PO4",
+"FCF", "GSI", "HSI", "Length", "Age", "WF")   
+
+Envs <- c("Salinity", "Temperature", "O2","SPM", "NO3", "NH4", "NO2", "PO4")
+Phy  <- c("Length", "Age", "FCF","HSI", "GSI")
+
+  Mantel_out_sig <- Mantel_out_sig %>% 
+    mutate(Species= factor(species, levels = c("OE", "GC", "WF"))) %>%
+    mutate(Env=factor(env, levels = vars)) %>%
+    mutate(kind = case_when(
+      env %in% Envs ~ "Environment",
+      env %in% c("WF") ~ "ASV",  
+      TRUE ~ "Physiology"))
+  Mantel_plot <- Mantel_out_sig %>% 
+    ggplot(., aes(x=Env, y=Species, fill=mantel)) +
+    geom_tile() +
+    scale_fill_gradient2(
+      low = "#FFFFFF",
+      high = "#006000",
+      limit = c(0,1)) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 90, size = 15, face ="bold"),
+        #axis.title.x.bottom = element_text(size=15,face = "bold"),
+        #axis.title.y.left = element_text(size=15,face = "bold"),
+        strip.text.x = element_text(size = 15, face = "bold"),
+        strip.text.x.bottom = element_text(size = 15,face = "bold"),
+        strip.text.y.left = element_text(size = 15,face = "bold"),
+        axis.title.x.bottom = element_blank(), 
+        axis.title.y.left = element_blank(), 
+        axis.text.x.bottom = element_text(face = "bold", angle = 45, hjust = 1),
+        axis.text.y.left = element_text(face = "bold", size = 15),
+        legend.title = element_text(size = 15, face ="bold"),
+        legend.text = element_text(size = 15,face = "bold"),
+        plot.title = element_text(size = 15, face = "bold"),
+        plot.subtitle = element_text(size = 15),
+        plot.caption = element_text(size = 15)) +
+    labs(#title = "Correlation relationship between avg.dist Bray-Curtis matrices and varibles", y = "Sample kind", 
+      fill="corr") +
+      labs(fill = "Mantel's r") +
+    #theme(legend.box.background = element_rect(color = "black"))
+    theme(legend.position="right", legend.key.width = unit(1, "cm")) 
+  Mantel_plot <- Mantel_plot +  geom_text(vjust=0.76,hjust=0.49, aes(label = paste0(c("","*")[(abs(sig) <= .05)+1],
+              c("","*")[(abs(sig) <= .001)+1], c("","*")[(abs(sig) <= .001)+1])))
+  kindOrder <- c("Environment", "Physiology", "ASV")
+  Mantel_plot <- Mantel_plot + facet_grid(. ~ factor(kind, levels = kindOrder), drop = TRUE, scale = "free", space = "free_x")
+  
+   
+
+  Mantel_plot <- cowplot::plot_grid(Mantel_plot, labels = c(""), ncol = 1)
+  Mantel_plot <- plot_grid(Mantel_plot, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(Mantel_plot)
+      
+ggsave(Mantel_plot, filename = paste(paste("Mantel_test",
+          sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 7,height = 3)
+
+```
+
+## 6.4  Export ASV & Core Dataframe
+
+```{r, message=FALSE, warning=FALSE}
+#############################################
+#Create Bacterial Counts and Reseq Dataframe#
+#############################################  
+
+SSU_Data_list <- list()
+for (Dataset in c(names(pslist)[!grepl("WF", names(pslist))][grepl("ps_GC|ps_OE", names(pslist)[!grepl("WF", names(pslist))])], "ps_WF")) {
+
+  require(plyr)
+  require(dplyr)
+  require(phyloseq)
+
+  Datasetname <- sub("ps_", "", Dataset)
+  ps            <- pslist[[Dataset]]
+  SSU_Data_list_length <- length(SSU_Data_list)
+  
+  
+  TAX <- as.data.frame(tax_table(ps))
+  OTU <- as.data.frame(t(otu_table(ps)))
+  REFSEQ <- refseq(ps)
+  REFSEQ <- stack(as.character(REFSEQ, use.names=TRUE))
+  colnames(REFSEQ)[colnames(REFSEQ) == "ind"] <- "ASV"
+
+  #################################
+  #Creating AverageSums per Season#
+  #################################
+  SeasonSums <- ps %>%
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+    phyloseq::otu_table() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "SampleID") %>%
+    dplyr::left_join(SAMDF16S, by = c("SampleID" = "SampleID")) %>%
+    dplyr::group_by(Season) %>%
+    dplyr::summarise(dplyr::across(rownames(tax_table(ps)), mean, na.rm = TRUE)) %>% 
+    t() %>%
+    as.data.frame() %>%
+    `colnames<-`(.[1, ]) %>%
+    .[-1, ] %>%
+    setNames(paste0("avg_", colnames(.))) %>%
+    mutate_all(as.numeric) %>%
+    rownames_to_column(var="ASV")
+
+    SSU_Data  <- TAX %>%  
+     rownames_to_column(var = "ASV") %>% 
+       left_join( #Add relative ASVmeans 
+       data.frame(t(phyloseq::otu_table(ps %>%
+        transform_sample_counts(function(x) {x/sum(x)*100})))) %>%
+          dplyr::mutate(ASVmeans = rowMeans(.)) %>%
+          dplyr::mutate(ASV = rownames(.)) %>% 
+          dplyr::select(ASV, ASVmeans)
+       ) %>%
+    left_join( #Add Sums by Season
+        SeasonSums
+       ) %>%
+    left_join( #Add relative ASV data per sample
+        data.frame(t(phyloseq::otu_table(ps %>%
+        transform_sample_counts(function(x) {x/sum(x)*100})))) %>%
+        rownames_to_column(var = "ASV")
+    ) %>%
+     left_join(REFSEQ
+    ) %>%
+      dplyr::arrange(desc(ASVmeans))
+   
+   rownames(SSU_Data) <- SSU_Data$ASV
+
+   write.csv2(SSU_Data, paste0(file.path(path_Output_16S, paste(paste(save_name, 
+            paste("SSU_ALL", sep=""), Date, Datasetname,  sep="_"),".csv", sep=""))))
+   
+   ###################  
+   #Extract Core-Taxa#
+   ###################
+    core_taxa_standard <- ps %>%
+      transform_sample_counts(function(x) {x/sum(x)*100}) %>%
+      microbiome::core_members(., detection = 0.0001, prevalence = 90/100)
+    
+    #   ps_rel <- microbiome::transform(pslist[[paste("ps_", Species, sep="")]], "compositional")
+    # #Initial core computing
+    # #Setting a detection threshold of 0.0001% (within samples) and prevelance threshold of 
+    #80% (across samples).
+    # core_taxa_standard <- microbiome::core_members(ps_rel, detection = 0.0001, prevalence = 90/100)
+    
+  write.csv2(SSU_Data[SSU_Data$ASV%in% core_taxa_standard,], 
+             file.path(path_Output_16S,paste(paste(save_name,"16S_merge_Filter_ASV_besttax_Core", 
+                                                   Datasetname, Date, sep="_"), ".csv", sep="")))
+  
+  SSU_Data_list[[SSU_Data_list_length+1]] <- SSU_Data
+  names(SSU_Data_list)[[SSU_Data_list_length+1]] <- Datasetname 
+}
+
+```
+
+#-
+
+# Save Data
+
+```{r, message=FALSE, warning=FALSE}
+###########
+#Save Data#
+###########
+saveRDS(pslist, file.path(path_Output_16S, paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+```
+

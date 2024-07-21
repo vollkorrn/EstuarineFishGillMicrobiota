@@ -2006,7 +2006,7 @@ saveRDS(WGCNA_list, file = paste0(file.path(path_Output_16S, paste(paste(save_na
 
 ### 9.3.3 Integrated Heatmap OE & GC
 
-```{r,  message=FALSE,warning=FALSE, fig.width=20, fig.height=15}
+```{r,  message=FALSE,warning=FALSE, fig.width=20, fig.height=10}
 
 hmps_list <- list()
 for (Datasetname  in names(WGCNA_list)[grepl("OE|GC", names(WGCNA_list))]) {
@@ -2126,7 +2126,7 @@ for (Datasetname  in names(WGCNA_list)[grepl("OE|GC", names(WGCNA_list))]) {
 
 ### 9.3.3 Integrated Heatmap Bakterioplankton
 
-```{r,  message=FALSE,warning=FALSE, fig.width=15, fig.height=15}
+```{r,  message=FALSE,warning=FALSE, fig.width=15, fig.height=10}
 for (Datasetname  in names(WGCNA_list)[grepl("WF", names(WGCNA_list))]) {
    
   omics_data    <- WGCNA_list[[Datasetname]]$omics_data
@@ -2183,7 +2183,7 @@ for (Datasetname  in names(WGCNA_list)[grepl("WF", names(WGCNA_list))]) {
 
 #### 9.3.3.1 Module Top Barplot
 
-```{r}
+```{r,  message=FALSE,warning=FALSE}
  ASVsums <- as.data.frame(sapply(WGCNA_list[[Datasetname]]$SSUWGCNAlist, function(x) sum(x$ASVmeans))) 
   ASVsums<- ASVsums %>% 
     round(0) %>%
@@ -2312,6 +2312,8 @@ for (Datasetname in names(WGCNA_list)[grepl("OE|GC|WF", names(WGCNA_list))]) {
   cowplot::plot_grid(part_1, part_2, nrow= 2) -> part_3
   ggsave(part_3, filename = paste(paste("Module_topTaxa_plot", 
           sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 16.5,height = 6)
+  
+  plot(part_3)
 ####
 #GC#
 ####
@@ -2332,7 +2334,7 @@ cowplot::plot_grid( Module_Top5_Barplot_list$GC$SSU14, Module_Top5_Barplot_list$
 cowplot::plot_grid(part_1, part_2, nrow= 2) -> part_3
 ggsave(part_3, filename = paste(paste("Module_topTaxa_plot_GC", 
           sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 18,height = 6)
-
+  plot(part_3)
 #### 
 #WF#
 ####
@@ -2363,7 +2365,7 @@ cowplot::plot_grid(part_1, part_2, part_3, nrow= 3) -> part_4
 
 ggsave(part_4, filename = paste(paste("Module_topTaxa_plot_WF", 
           sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 16,height = 9)
- 
+ plot(part_4)
  
  
  
@@ -2627,13 +2629,11 @@ for (Datasetname in names(WGCNA_list)[grepl("OE|GC", names(WGCNA_list))]) {
             #filter(abs(MM) > 0.5 & p.MM < 0.05 & ASVmeans > 0.005 & GS < -0.2) 
 
   COL <- na.omit(color_mapping[unique(names(color_mapping))])
-  color_mapping <- pslist$Optics$colored_taxonomy_Fish
-  COL <- na.omit(color_mapping[unique(names(color_mapping))])
-  
+
+
   GS_SSU$Taxa <- GS_SSU$ASVname
   
-  GS_SSU<- GS_SSU  %>% 
-  left_join(COL)
+  GS_SSU <- left_join(GS_SSU, COL,copy = TRUE, keep = NULL)
 
   GS_SSU$Color<- GS_SSU$Color %>% replace_na("grey50")
 
