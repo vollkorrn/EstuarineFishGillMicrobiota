@@ -1,6 +1,6 @@
-A repository for the analysis of estuarine fish gill mucus microbiota composition of the spatial course and at four seasons. The dataset and analysis comprises 250 16S samples from two fish species and bacterioplankton samples as well as abiotic and physiological data. 
+A repository for the analysis of estuarine fish gill mucus microbiota composition over space and time. The dataset and analysis comprises 250 16S samples from two fish species and bacterioplankton samples as well as abiotic and physiological data. 
 
-The Analysis splits into 6 parts
+The Analysis splits into 6 parts: 
 
 0: 16S Dataprocessing-Pipeline used on Linux-HPC: EstuarineFishGillMicrobiota_dada2_21.07.24.Rmd
 1: Abundance filtering and abiotics visulization: EstuarineFishGillMicrobiota_part1_21.07.24.Rmd
